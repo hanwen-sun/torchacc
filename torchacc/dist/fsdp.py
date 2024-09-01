@@ -1,11 +1,14 @@
 import functools
 from types import MethodType
 from typing import Dict, Optional, Set, Any
+import copy
 
 import torch
 import torch.fx as fx
 from torch.fx.passes.split_module import split_module
 import torch_xla.distributed.fsdp as xla_fsdp
+import torch_xla.core.xla_model as xm
+
 
 from torchacc.config import Config
 from torchacc.dist import ParallelModule
@@ -191,6 +194,7 @@ class FullyShardedDataParallel(ParallelModule):
             sharding_groups=self.mesh.get_fsdp_rank_groups(),
             sharding_rank=self.mesh.get_fsdp_rank(),
             sharding_world_size=self.mesh.get_fsdp_num())
+
         return model
 
     def clip_grad_norm_(self, max_grad_norm):
@@ -211,10 +215,11 @@ class FullyShardedDataParallel(ParallelModule):
         # we only support full_state_dict now
         assert full_state_dict == "FULL_STATE_DICT"
         shard_meta_data = self.model.get_shard_metadata()
+
         sharded_optim_state = optim.state_dict()['state']
         optim_state_param_groups = optim.state_dict()['param_groups']
         optim_state_param_groups[0]['params'].clear()
-        
+
         consolidate_optim_state: Dict[str, Any] = {'state': {}, 'param_groups': {}}
         consolidate_optim_state['param_groups'] = optim_state_param_groups
         
@@ -231,7 +236,7 @@ class FullyShardedDataParallel(ParallelModule):
                 shape_list[0] = shape_list[0] * self.model.world_size
                 buffer_size = tuple(shape_list)
                 tensor_buffer = state_params.new_zeros(*buffer_size)
-                
+                 
                 tensor_buffer = self.model.all_gather_op(state_params, groups=self.model.sharding_groups)
                 xm.rendezvous("optim_state_all_gather")
                 
@@ -247,31 +252,29 @@ class FullyShardedDataParallel(ParallelModule):
                         if cpu_offload:
                             if 'step' not in consolidate_optim_state['state'][fn].keys():
                                 consolidate_optim_state['state'][fn]['step'] = layer_state['step'].cpu()
-                            
                             consolidate_optim_state['state'][fn][state_name] = fp.cpu()
                         else:
                             if 'step' not in consolidate_optim_state['state'][fn].keys():
                                 consolidate_optim_state['state'][fn]['step'] = layer_state['step']
-                        consolidate_optim_state['state'][fn]['step'] = fp
+                            consolidate_optim_state['state'][fn][state_name] = fp
                         consolidate_optim_state['param_groups'][0]['params'].append(fn)
-        
+
         return consolidate_optim_state
 
     def load_optim_state_dict(self,
-                                optim_state_dict: Dict[str, Any],
-                                optim: torch.optim.Optimizer,
-                                full_state_dict: str,
-                                rank0_only: bool = True):
+                              optim_state_dict: Dict[str, Any],
+                              optim: torch.optim.Optimizer,
+                              full_state_dict: str,
+                              rank0_only: bool = True) -> Dict[str, Any]:
         # we now only support rank0 to load the state_dict;
         # we now only support FULL_STATE_DICT
         assert full_state_dict == 'FULL_STATE_DICT'  
         shard_meta_data = self.model.get_shard_metadata()
+        #print(shard_meta_data)
+        unflat_optim_state = copy.deepcopy(optim_state_dict)
 
-        unflat_optim_state = None
-        if self.rank == 0:
-            unflat_optim_state = optim_state_dict
-
-        unflat_optim_state = optim_utils._broadcast_processed_state(unflat_optim_state, self.mdoel.rank, self.model.world_size, self.model.sharding_groups)
+        unflat_optim_state = optim_utils._broadcast_processed_state(unflat_optim_state, self.model.rank, self.model.world_size, self.model.sharding_groups)
+        
         unflat_state = unflat_optim_state['state']
         xm.rendezvous("broadcast processed state")
         
@@ -290,6 +293,7 @@ class FullyShardedDataParallel(ParallelModule):
                     
                     # inplement broadcast
                     root_ordinal = xm.get_ordinal() if self.model.rank == 0 else -1
+
                     #  这里是否可以用list(tensor)优化
                     self.model.collective_broadcast_op(
                         [tensor_buffer],
@@ -297,6 +301,7 @@ class FullyShardedDataParallel(ParallelModule):
                         groups=self.model.sharding_groups)
                     
                     xm.rendezvous("broadcast unflat_state")
+                    
                     # post processing
                     unflat_state[name][state_name] = tensor_buffer
                     del tensor_buffer
@@ -310,8 +315,8 @@ class FullyShardedDataParallel(ParallelModule):
                     shard_tensor = self.model._get_shard(flat_tensor)  
                 else:
                     shard_tensor = flat_tensor
-                    flat_value[state_name] = shard_tensor            
-                    flat_optim_state['state'][idx] = flat_value
+                flat_value[state_name] = shard_tensor            
+            flat_optim_state['state'][idx] = flat_value
             # 这里要不要del
         
         # 这first item of flat_optim_state is 0 to the number of fsdp wrapped layer

@@ -72,6 +72,16 @@ class _PosDimTensorInfo(NamedTuple):
     shape: torch.Size
     dtype: torch.dtype
 
+def setup_gloo_distributed(world_size):
+    # 创建一个新的 gloo 进程组
+    new_group_ranks = [r for r in range(world_size)]
+
+    pg = dist.new_group(ranks=new_group_ranks, backend="gloo")
+    print(f"Initialized GLOO distributed process group.")
+    return pg
+
+def cleanup_gloo_distributed(pg):
+    dist.destroy_process_group(pg)
 
 def _broadcast_processed_state(
   optim_state: dict[str, any],
@@ -86,9 +96,12 @@ def _broadcast_processed_state(
             lambda v: v.cpu() if v.dim() == 0 else _PosDimTensorInfo(v.shape, v.dtype),  # type: ignore[union-attr]
             optim_state,
         )
-    dist.init_process_group("gloo", rank=rank, world_size=world_size)
+    #dist.init_process_group("gloo", rank=rank, world_size=world_size)
+    pg_group = setup_gloo_distributed(world_size)
     
-    dist.broadcast_object_list(objects, src=0, group=group)
+    dist.broadcast_object_list(objects, src=0, group=pg_group)
+    cleanup_gloo_distributed(pg_group)
+
     if rank == 0:
         return optim_state
     else:
