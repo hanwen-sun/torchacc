@@ -216,6 +216,7 @@ class FullyShardedDataParallel(ParallelModule):
         assert full_state_dict == "FULL_STATE_DICT"
         shard_meta_data = self.model.get_shard_metadata()
 
+        optim_state_dict = optim.state_dict()
         sharded_optim_state = optim.state_dict()['state']
         optim_state_param_groups = optim.state_dict()['param_groups']
         optim_state_param_groups[0]['params'].clear()
@@ -223,6 +224,7 @@ class FullyShardedDataParallel(ParallelModule):
         consolidate_optim_state: Dict[str, Any] = {'state': {}, 'param_groups': {}}
         consolidate_optim_state['param_groups'] = optim_state_param_groups
         
+        param_names_ = None
         for (layer_idx, layer_state), (layer_name, (param_names, param_shapes, param_numels)) in zip(
         sharded_optim_state.items(), shard_meta_data['flatten_info'].items()):
         # 分层all_gather, unflatten, to_cpu
@@ -246,6 +248,8 @@ class FullyShardedDataParallel(ParallelModule):
                     tensor_buffer, layer_name, param_names, param_shapes, param_numels)
                     # 删除tensor_buffer
                     del tensor_buffer
+
+                    param_names_ = full_names
                     for fn, fp in zip(full_names, full_params):
                         if fn not in consolidate_optim_state['state'].keys():
                             consolidate_optim_state['state'].setdefault(fn, {})
@@ -257,8 +261,10 @@ class FullyShardedDataParallel(ParallelModule):
                             if 'step' not in consolidate_optim_state['state'][fn].keys():
                                 consolidate_optim_state['state'][fn]['step'] = layer_state['step']
                             consolidate_optim_state['state'][fn][state_name] = fp
-                        consolidate_optim_state['param_groups'][0]['params'].append(fn)
-
+        
+        if rank0_only and self.model.rank == 0:
+            consolidate_optim_state['param_groups'][0]['params'] = param_names_
+        
         return consolidate_optim_state
 
     def load_optim_state_dict(self,
