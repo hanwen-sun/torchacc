@@ -3,8 +3,10 @@ import torch.distributed as dist
 from typing import NamedTuple, Optional
 from torch.utils._pytree import tree_map_only
 
-# get orig name from shard_meta_data, and transform it to origial optim state_dict name
-# of each layer(like torch)
+import torch_xla.core.xla_model as xm
+
+# get orig name from shard_meta_data, and transform it to original optim state_dict name
+# of each layer
 def _shard_name_to_optim_name(layer_name, param_names):
   full_names = []
   
@@ -36,30 +38,6 @@ def _unflatten_optim_params(params, layer_name, param_names, param_shapes, param
 
   return full_names, full_params
 
-def _construct_unflat_optim_state(shard_meta_data, optim) -> dict[str, any]:
-  # we now only inplement for adamw optimizer!
-  # we have 'step', 'exp_avg' and 'exp_avg_sq' for optimizer state;
-  unflat_optim_state: dict[str, Any] = {}
-  # name保持对齐
-  name_list = []
-  shape_list = []
-  # 提取 flatten_info, 改名, 映射shape;
-  for (layer_name, (param_names, param_shapes, param_numels)) in shard_meta_data['flatten_info'].items():
-    full_names = _shard_name_to_optim_name(layer_name, param_names)
-    name_list += full_names
-    shape_list += param_shapes
-  
-  for n, s in zip(name_list, shape_list):
-    unflat_optim_state.setdefault(n, {})
-    # 如何处理scalar信息 --> step的scalar
-    unflat_optim_state[n]['step'] = torch.Size([])
-    #if isinstance(optim, torch.optim.AdamW):
-    # we need to check the type of optimizer here
-    unflat_optim_state[n]['exp_avg'] = s
-    unflat_optim_state[n]['exp_avg_sq'] = s
-  
-  return unflat_optim_state
-
 class _PosDimTensorInfo(NamedTuple):
     """
     Attributes:
@@ -73,11 +51,9 @@ class _PosDimTensorInfo(NamedTuple):
     dtype: torch.dtype
 
 def setup_gloo_distributed(world_size):
-    # 创建一个新的 gloo 进程组
+    # create a new gloo process group
     new_group_ranks = [r for r in range(world_size)]
-
     pg = dist.new_group(ranks=new_group_ranks, backend="gloo")
-    print(f"Initialized GLOO distributed process group.")
     return pg
 
 def cleanup_gloo_distributed(pg):
@@ -86,8 +62,7 @@ def cleanup_gloo_distributed(pg):
 def _broadcast_processed_state(
   optim_state: dict[str, any],
   rank: int,
-  world_size: int,
-  group: list[list[int]]
+  world_size: int
 ):
     objects: list[Any] = [None]
     if rank == 0:
@@ -96,9 +71,8 @@ def _broadcast_processed_state(
             lambda v: v.cpu() if v.dim() == 0 else _PosDimTensorInfo(v.shape, v.dtype),  # type: ignore[union-attr]
             optim_state,
         )
-    #dist.init_process_group("gloo", rank=rank, world_size=world_size)
-    pg_group = setup_gloo_distributed(world_size)
     
+    pg_group = setup_gloo_distributed(world_size)
     dist.broadcast_object_list(objects, src=0, group=pg_group)
     cleanup_gloo_distributed(pg_group)
 
@@ -108,14 +82,11 @@ def _broadcast_processed_state(
         return objects[0]
 
 def _flatten_optim_state(unflat_optim_state, state_name, full_names):
-    # 判断是否dim() == 0
-    # 提取出param_names->state_name对应的param_list
-    # flatten后直接返回 (这里要不要tocpu)
     param_list = []
     for name in full_names:
       param_list.append(unflat_optim_state[name][state_name])
     
-    # tensor scalar值, 默认各个rank一样;
+    # scalar tensor do not need flatten
     if param_list[0].dim() == 0:
       return param_list[0]
     

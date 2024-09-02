@@ -1,7 +1,6 @@
 import functools
 from types import MethodType
 from typing import Dict, Optional, Set, Any
-import copy
 
 import torch
 import torch.fx as fx
@@ -216,56 +215,58 @@ class FullyShardedDataParallel(ParallelModule):
         assert full_state_dict == "FULL_STATE_DICT"
         shard_meta_data = self.model.get_shard_metadata()
 
-        optim_state_dict = optim.state_dict()
         sharded_optim_state = optim.state_dict()['state']
         optim_state_param_groups = optim.state_dict()['param_groups']
         optim_state_param_groups[0]['params'].clear()
 
-        consolidate_optim_state: Dict[str, Any] = {'state': {}, 'param_groups': {}}
-        consolidate_optim_state['param_groups'] = optim_state_param_groups
+        consolidate_optim_state_dict: Dict[str, Any] = {'state': {}, 'param_groups': {}}
         
-        param_names_ = None
-        for (layer_idx, layer_state), (layer_name, (param_names, param_shapes, param_numels)) in zip(
-        sharded_optim_state.items(), shard_meta_data['flatten_info'].items()):
-        # 分层all_gather, unflatten, to_cpu
-        # unflatten需要得到 shard_meta_data中的相关信息; 对于每一层layer, 使用的param相同;
+        if rank0_only and self.model.rank == 0:
+            consolidate_optim_state_dict['param_groups'] = optim_state_param_groups
+        
+        for (layer_idx, layer_state), (layer_name, params) in zip(
+        sharded_optim_state.items(), shard_meta_data['flatten_info'].items()):       
+            param_names, param_shapes, param_numels = params
+            # get full_names first
+            full_names = optim_utils._shard_name_to_optim_name(layer_name, param_names)
+            unflat_state_dict = {fn: {} for fn in full_names}
+            if rank0_only and self.model.rank == 0:
+                consolidate_optim_state_dict['param_groups'][0]['params'].append(full_names)
+            
             for state_name, state_params in layer_state.items():
                 if (state_params.dim() == 0):
+                    if rank0_only and self.model.rank == 0:
+                        for fn in full_names:
+                            if cpu_offload:
+                                unflat_state_dict[fn][state_name] = state_params.cpu()
+                            else:
+                                unflat_state_dict[fn][state_name] = state_params
                     continue
                 # prepare tensor buffer for all_gather
-                # we consume the loaded params is flattened
+                # we consume the loaded params is flattened now
                 shape_list = list(state_params.size())
                 shape_list[0] = shape_list[0] * self.model.world_size
                 buffer_size = tuple(shape_list)
                 tensor_buffer = state_params.new_zeros(*buffer_size)
-                 
-                tensor_buffer = self.model.all_gather_op(state_params, groups=self.model.sharding_groups)
-                xm.rendezvous("optim_state_all_gather")
                 
+                tensor_buffer = self.model.all_gather_op(state_params, groups=self.model.sharding_groups)
+                xm.mark_step()
                 # we now only support rank0_only
                 if rank0_only and self.model.rank == 0:
-                    full_names, full_params = optim_utils._unflatten_optim_params(
+                    _, full_params = optim_utils._unflatten_optim_params(
                     tensor_buffer, layer_name, param_names, param_shapes, param_numels)
-                    # 删除tensor_buffer
-                    del tensor_buffer
-
-                    param_names_ = full_names
+                    
                     for fn, fp in zip(full_names, full_params):
-                        if fn not in consolidate_optim_state['state'].keys():
-                            consolidate_optim_state['state'].setdefault(fn, {})
                         if cpu_offload:
-                            if 'step' not in consolidate_optim_state['state'][fn].keys():
-                                consolidate_optim_state['state'][fn]['step'] = layer_state['step'].cpu()
-                            consolidate_optim_state['state'][fn][state_name] = fp.cpu()
+                            xm.mark_step()
+                            unflat_state_dict[fn][state_name] = fp.cpu() # tensor evaluation
                         else:
-                            if 'step' not in consolidate_optim_state['state'][fn].keys():
-                                consolidate_optim_state['state'][fn]['step'] = layer_state['step']
-                            consolidate_optim_state['state'][fn][state_name] = fp
+                            unflat_state_dict[fn][state_name] = fp
+
+        consolidate_optim_state_dict['state'] = unflat_state_dict        
+
         
-        if rank0_only and self.model.rank == 0:
-            consolidate_optim_state['param_groups'][0]['params'] = param_names_
-        
-        return consolidate_optim_state
+        return consolidate_optim_state_dict
 
     def load_optim_state_dict(self,
                               optim_state_dict: Dict[str, Any],
@@ -274,60 +275,61 @@ class FullyShardedDataParallel(ParallelModule):
                               rank0_only: bool = True) -> Dict[str, Any]:
         # we now only support rank0 to load the state_dict;
         # we now only support FULL_STATE_DICT
-        assert full_state_dict == 'FULL_STATE_DICT'  
+        assert full_state_dict == 'FULL_STATE_DICT'
         shard_meta_data = self.model.get_shard_metadata()
-        #print(shard_meta_data)
-        unflat_optim_state = copy.deepcopy(optim_state_dict)
-
-        unflat_optim_state = optim_utils._broadcast_processed_state(unflat_optim_state, self.model.rank, self.model.world_size, self.model.sharding_groups)
+        unflat_optim_state = optim_state_dict
         
+        # broadcast on global ranks otherwise it'may hang on the following broadcast
+        unflat_optim_state = optim_utils._broadcast_processed_state(unflat_optim_state, xm.get_ordinal(), xm.xrt_world_size())
         unflat_state = unflat_optim_state['state']
-        xm.rendezvous("broadcast processed state")
-        
         # flatten and sharded state_dict
         flat_optim_state: Dict[str, Any] = {'state': {}, 'param_groups': {}}
         
-        for idx, (layer_name, (param_names, _, _)) in enumerate(shard_meta_data['flatten_info'].items()):
+        for idx, (layer_name, (params)) in enumerate(shard_meta_data['flatten_info'].items()):
+            param_names, _, _ = params
             full_names = optim_utils._shard_name_to_optim_name(layer_name, param_names)
             
             for name in full_names:
-                for state_name, state in unflat_state[name].items():
-                    if self.model.rank == 0:
-                        tensor_buffer = state.to(self.model.xla_device)
-                    else:
-                        tensor_buffer = torch.zeros(state.shape, dtype=state.dtype, device=self.model.xla_device)
+                for state_name, state_params in unflat_state[name].items():
+                    # all ranks will skip this instance
+                    if isinstance(state_params, torch.Tensor) and state_params.dim() == 0:
+                        continue
                     
-                    # inplement broadcast
+                    if self.model.rank == 0 and isinstance(state_params, torch.Tensor):
+                        tensor_buffer = state_params.to(self.model.xla_device)
+                    else:
+                        tensor_buffer = torch.zeros(state_params.shape, dtype=state_params.dtype, device=self.model.xla_device)
+                    
+                    # Since broadcast employs all-reduce, here we only need to ensure that root_ordinal
+                    # is different from xm.get_ordinal() on the non-root nodes
                     root_ordinal = xm.get_ordinal() if self.model.rank == 0 else -1
-
-                    #  这里是否可以用list(tensor)优化
+                    
                     self.model.collective_broadcast_op(
                         [tensor_buffer],
                         root_ordinal=root_ordinal,
                         groups=self.model.sharding_groups)
-                    
-                    xm.rendezvous("broadcast unflat_state")
-                    
-                    # post processing
+
                     unflat_state[name][state_name] = tensor_buffer
-                    del tensor_buffer
+                    
             # flatten optim_state
             state_names = unflat_state[full_names[0]].keys()
             
             flat_value: Dict[str, Any] = {}
             for state_name in state_names:
                 flat_tensor = optim_utils._flatten_optim_state(unflat_state, state_name, full_names)
+                # get shard immediately
                 if flat_tensor.dim() != 0:
                     shard_tensor = self.model._get_shard(flat_tensor)  
                 else:
                     shard_tensor = flat_tensor
                 flat_value[state_name] = shard_tensor            
             flat_optim_state['state'][idx] = flat_value
-            # 这里要不要del
+            
+            xm.mark_step()
         
-        # 这first item of flat_optim_state is 0 to the number of fsdp wrapped layer
+        # first item of flat_optim_state is 0 to the number of fsdp wrapped layer
         # and other param_groups are all none
         flat_optim_state['param_groups'] = unflat_optim_state['param_groups']
         flat_optim_state['param_groups'][0]['params'] = [i for i in range(0, len(flat_optim_state['state'].keys()))]
-        
+
         return flat_optim_state  
