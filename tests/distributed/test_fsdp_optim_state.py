@@ -1,12 +1,12 @@
-import torch
-import torchacc as ta
+import copy
 
-from utils.distributed import MultiProcessTestBase, init_pg, skip_if_lt_x_gpu
-from torchacc.dist.fsdp import FullyShardedDataParallel as FSDP
+import torch
 import torch.distributed as dist
+import torchacc as ta
+from torchacc.dist.fsdp import FullyShardedDataParallel as FSDP
 from torchacc.config import Config
 
-import copy
+from utils.distributed import MultiProcessTestBase, init_pg, skip_if_lt_x_gpu
 
 
 class Net(torch.nn.Module):
