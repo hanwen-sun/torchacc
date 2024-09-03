@@ -79,7 +79,7 @@ def _broadcast_processed_state(
     if rank == 0:
         return optim_state
     else:
-        return objects[0]
+        return objects[0]    
 
 def _flatten_optim_state(unflat_optim_state, state_name, full_names):
     param_list = []

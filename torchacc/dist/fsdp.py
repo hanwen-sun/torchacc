@@ -234,7 +234,7 @@ class FullyShardedDataParallel(ParallelModule):
                 consolidate_optim_state_dict['param_groups'][0]['params'].append(full_names)
             
             for state_name, state_params in layer_state.items():
-                if (state_params.dim() == 0):
+                if state_params.dim() == 0:
                     if rank0_only and self.model.rank == 0:
                         for fn in full_names:
                             if cpu_offload:
