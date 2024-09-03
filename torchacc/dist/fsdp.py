@@ -193,7 +193,6 @@ class FullyShardedDataParallel(ParallelModule):
             sharding_groups=self.mesh.get_fsdp_rank_groups(),
             sharding_rank=self.mesh.get_fsdp_rank(),
             sharding_world_size=self.mesh.get_fsdp_num())
-
         return model
 
     def clip_grad_norm_(self, max_grad_norm):
