@@ -5,9 +5,8 @@ from torch.utils._pytree import tree_map_only
 
 import torch_xla.core.xla_model as xm
 
-# get orig name from shard_meta_data, and transform it to original optim state_dict name
-# of each layer
-def _shard_name_to_optim_name(layer_name, param_names):
+# transform name from shard_meta_data to original optim state_dict name of each layer
+def _get_layer_full_names(layer_name, param_names):
   full_names = []
   
   prefix = None
@@ -28,9 +27,8 @@ def _shard_name_to_optim_name(layer_name, param_names):
   
   return full_names
 
-
 def _unflatten_optim_params(params, layer_name, param_names, param_shapes, param_numels):
-  full_names = _shard_name_to_optim_name(layer_name, param_names)
+  full_names = _get_layer_full_names(layer_name, param_names)
   
   if params.dim() == 0:
     full_params = [params for _ in range(len(full_names))] 
@@ -53,13 +51,13 @@ class _PosDimTensorInfo(NamedTuple):
     shape: torch.Size
     dtype: torch.dtype
 
-def setup_gloo_distributed(world_size):
+def _setup_gloo_distributed(world_size):
     # create a new gloo process group
     new_group_ranks = [r for r in range(world_size)]
     pg = dist.new_group(ranks=new_group_ranks, backend="gloo")
     return pg
 
-def cleanup_gloo_distributed(pg):
+def _cleanup_gloo_distributed(pg):
     dist.destroy_process_group(pg)
 
 def _broadcast_processed_state(
@@ -75,9 +73,9 @@ def _broadcast_processed_state(
             optim_state,
         )
     
-    pg_group = setup_gloo_distributed(world_size)
+    pg_group = _setup_gloo_distributed(world_size)
     dist.broadcast_object_list(objects, src=0, group=pg_group)
-    cleanup_gloo_distributed(pg_group)
+    _cleanup_gloo_distributed(pg_group)
 
     if rank == 0:
         return optim_state
@@ -129,14 +127,3 @@ def _flatten_optim_state(unflat_optim_state, state_name, full_names):
     ]
     
     return torch.cat(flat_tensors, dim=0)
-  
-def _optim_state_info(consolidate_optim_state):
-    print("save optim state info:")
-    state = consolidate_optim_state['state']
-    for layer_name, layer_state in state.items():
-      print("layer_name: " + layer_name)
-      for state_name, state_value in layer_state.items():
-        print(f"state_name: {state_name}, shape: {state_value.shape}, sum: {state_value.sum()}")
-    
-    print("save optim param_group info:")
-    print(consolidate_optim_state['param_groups'])

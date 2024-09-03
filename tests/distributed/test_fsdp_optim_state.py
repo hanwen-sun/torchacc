@@ -55,11 +55,12 @@ def _step_model_without_update(
         model: torch.nn.Module,
         optim: torch.optim.Optimizer,
 ):
-    # just do forward and backward
+    # do forward and backward and no optim.step()
     torch.manual_seed(0)  # set seed for determinism
     optim.zero_grad()
     batch_size = 1024
     device = ta.lazy_device()
+    
     data1 = torch.rand(batch_size, 1024).to(device)
     data2 = torch.zeros(batch_size, dtype=torch.int64).to(device)
     loss = model(data1)
@@ -128,12 +129,12 @@ class FSDPOptimStateTest(MultiProcessTestBase):
         _step_model(model_1, optim_1, 10)
         fsdp_osd1 = FSDP.optim_state_dict(model_1, optim_1, full_state_dict="FULL_STATE_DICT")
         
-        # we create a new group with world_size/2
+        # we create a new group with world_size / 2
         new_world_size = self.world_size / 2
         new_group_ranks = list(range(int(new_world_size)))
         new_group = dist.new_group(ranks=new_group_ranks)
 
-        # init model 2 with world_size/2
+        # init model 2 with world_size / 2
         config2 = Config()
         config2.dist.fsdp.size = 2
         model_2, optim_2 = _init_model(config=config2)
