@@ -208,7 +208,7 @@ class FullyShardedDataParallel(ParallelModule):
 
     def optim_state_dict(self,
                          optim: torch.optim.Optimizer,
-                         full_state_dict: str,
+                         full_state_dict: str = 'FULL_STATE_DICT',
                          rank0_only: bool = True,
                          cpu_offload: bool = True) -> Dict[str, Any]:
         # we only support full_state_dict now
@@ -223,7 +223,10 @@ class FullyShardedDataParallel(ParallelModule):
         
         if rank0_only and self.model.rank == 0:
             consolidate_optim_state_dict['param_groups'] = optim_state_param_groups
-        
+        if not rank0_only:
+            consolidate_optim_state_dict['param_groups'] = optim_state_param_groups
+
+            
         for (layer_idx, layer_state), (layer_name, params) in zip(
         sharded_optim_state.items(), shard_meta_data['flatten_info'].items()):       
             param_names, param_shapes, param_numels = params
@@ -232,27 +235,27 @@ class FullyShardedDataParallel(ParallelModule):
             unflat_state_dict = {fn: {} for fn in full_names}
             if rank0_only and self.model.rank == 0:
                 consolidate_optim_state_dict['param_groups'][0]['params'].append(full_names)
-            
+            if not rank0_only:
+                consolidate_optim_state_dict['param_groups'] = optim_state_param_groups
+
             for state_name, state_params in layer_state.items():
-                if state_params.dim() == 0:
-                    if rank0_only and self.model.rank == 0:
-                        for fn in full_names:
-                            if cpu_offload:
-                                unflat_state_dict[fn][state_name] = state_params.cpu()
-                            else:
-                                unflat_state_dict[fn][state_name] = state_params
-                    continue
-                # prepare tensor buffer for all_gather
-                # we consume the loaded params is flattened now
-                shape_list = list(state_params.size())
-                shape_list[0] = shape_list[0] * self.model.world_size
-                buffer_size = tuple(shape_list)
-                tensor_buffer = state_params.new_zeros(*buffer_size)
-                
-                tensor_buffer = self.model.all_gather_op(state_params, groups=self.model.sharding_groups)
+                tensor_buffer = optim_utils._all_gather_state(state_params, self.model)
                 xm.mark_step()
-                # we now only support rank0_only
+
+                # only rank0 save consolidate state_dict
                 if rank0_only and self.model.rank == 0:
+                    _, full_params = optim_utils._unflatten_optim_params(
+                    tensor_buffer, layer_name, param_names, param_shapes, param_numels)
+
+                    for fn, fp in zip(full_names, full_params):
+                        if cpu_offload:
+                            xm.mark_step()
+                            unflat_state_dict[fn][state_name] = fp.cpu() # tensor evaluation
+                        else:
+                            unflat_state_dict[fn][state_name] = fp
+                
+                # all ranks save consolidate state_dict
+                if not rank0_only:
                     _, full_params = optim_utils._unflatten_optim_params(
                     tensor_buffer, layer_name, param_names, param_shapes, param_numels)
                     
@@ -262,20 +265,19 @@ class FullyShardedDataParallel(ParallelModule):
                             unflat_state_dict[fn][state_name] = fp.cpu() # tensor evaluation
                         else:
                             unflat_state_dict[fn][state_name] = fp
-
         consolidate_optim_state_dict['state'] = unflat_state_dict        
-
         
         return consolidate_optim_state_dict
 
     def load_optim_state_dict(self,
                               optim_state_dict: Dict[str, Any],
                               optim: torch.optim.Optimizer,
-                              full_state_dict: str,
+                              full_state_dict: str = 'FULL_STATE_DICT',
                               rank0_only: bool = True) -> Dict[str, Any]:
         # we now only support rank0 to load the state_dict;
         # we now only support FULL_STATE_DICT
-        assert full_state_dict == 'FULL_STATE_DICT'
+        assert full_state_dict, 'FULL_STATE_DICT'
+        assert rank0_only, True
         shard_meta_data = self.model.get_shard_metadata()
         unflat_optim_state = optim_state_dict
         
@@ -291,24 +293,11 @@ class FullyShardedDataParallel(ParallelModule):
             
             for name in full_names:
                 for state_name, state_params in unflat_state[name].items():
-                    # all ranks will skip this instance
+                    # all ranks will skip scalar tensor
                     if isinstance(state_params, torch.Tensor) and state_params.dim() == 0:
                         continue
-                    
-                    if self.model.rank == 0 and isinstance(state_params, torch.Tensor):
-                        tensor_buffer = state_params.to(self.model.xla_device)
-                    else:
-                        tensor_buffer = torch.zeros(state_params.shape, dtype=state_params.dtype, device=self.model.xla_device)
-                    
-                    # Since broadcast employs all-reduce, here we only need to ensure that root_ordinal
-                    # is different from xm.get_ordinal() on the non-root nodes
-                    root_ordinal = xm.get_ordinal() if self.model.rank == 0 else -1
-                    
-                    self.model.collective_broadcast_op(
-                        [tensor_buffer],
-                        root_ordinal=root_ordinal,
-                        groups=self.model.sharding_groups)
 
+                    tensor_buffer = optim_utils._broadcast_state(state_params, self.model)
                     unflat_state[name][state_name] = tensor_buffer
                     
             # flatten optim_state

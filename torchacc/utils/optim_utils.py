@@ -30,11 +30,14 @@ def _shard_name_to_optim_name(layer_name, param_names):
 
 
 def _unflatten_optim_params(params, layer_name, param_names, param_shapes, param_numels):
-  full_params = [
-      t.view(s) for (t, s) in zip(params.split(param_numels), param_shapes)
-  ]
-  
   full_names = _shard_name_to_optim_name(layer_name, param_names)
+  
+  if params.dim() == 0:
+    full_params = [params for _ in range(len(full_names))] 
+  else:
+    full_params = [
+        t.view(s) for (t, s) in zip(params.split(param_numels), param_shapes)
+    ]
 
   return full_names, full_params
 
@@ -81,6 +84,37 @@ def _broadcast_processed_state(
     else:
         return objects[0]    
 
+def _broadcast_state(state_params, model):
+    device = model.xla_device
+    if model.rank == 0 and isinstance(state_params, torch.Tensor):
+        tensor_buffer = state_params.to(device)
+    else:
+        tensor_buffer = torch.zeros(state_params.shape, dtype=state_params.dtype, device=device)
+                    
+    # Since broadcast employs all-reduce, here we only need to ensure that root_ordinal
+    # is different from xm.get_ordinal() on the non-root nodes
+    root_ordinal = xm.get_ordinal() if model.rank == 0 else -1
+                    
+    model.collective_broadcast_op(
+        [tensor_buffer],
+        root_ordinal=root_ordinal,
+        groups=model.sharding_groups)
+
+    return tensor_buffer
+  
+def _all_gather_state(state_params, model):
+    if state_params.dim() == 0:
+      return state_params
+    
+    shape_list = list(state_params.size())
+    shape_list[0] = shape_list[0] * model.world_size
+    buffer_size = tuple(shape_list)
+    tensor_buffer = state_params.new_zeros(*buffer_size)            
+    tensor_buffer = model.all_gather_op(state_params, groups=model.sharding_groups)
+
+    return tensor_buffer
+  
+  
 def _flatten_optim_state(unflat_optim_state, state_name, full_names):
     param_list = []
     for name in full_names:
