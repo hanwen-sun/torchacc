@@ -113,10 +113,6 @@ def _all_gather_state(state_params, model):
     if state_params.dim() == 0:
         return state_params
 
-    shape_list = list(state_params.size())
-    shape_list[0] = shape_list[0] * model.world_size
-    buffer_size = tuple(shape_list)
-    tensor_buffer = state_params.new_zeros(*buffer_size)
     tensor_buffer = model.all_gather_op(
         state_params, groups=model.sharding_groups)
 
