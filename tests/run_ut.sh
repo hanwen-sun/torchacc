@@ -3,7 +3,6 @@ set -exo pipefail
 
 export PYTHONPATH=$PYTHONPATH:.
 
-export CUDA_VISIBLE_DEVICES=4,5,6,7
 
 function test_unittests() {
     pytest tests/core/test_bucketing_loader.py
