@@ -36,45 +36,45 @@ def _init_model(config: Config):
     return model, optim
 
 
-def _step_model(
+def _train_step(
     model: torch.nn.Module,
     optim: torch.optim.Optimizer,
     num_iters: int = 1,
 ):
-    torch.manual_seed(0)  # set seed for determinism
     optim.zero_grad()
     batch_size = 1024
     device = ta.lazy_device()
 
     for i in range(num_iters):
-        data1 = torch.rand(batch_size, 1024).to(device)
-        data2 = torch.zeros(batch_size, dtype=torch.int64).to(device)
-        loss = model(data1)
-        loss = torch.nn.functional.nll_loss(loss, data2)
+        data = torch.rand(batch_size, 1024).to(device)
+        labels = torch.zeros(batch_size, dtype=torch.int64).to(device)
+        loss = model(data)
+        loss = torch.nn.functional.nll_loss(loss, labels)
         loss.backward()
         optim.step()
 
 
-def _step_model_without_update(
+def _train_step_without_update(
     model: torch.nn.Module,
     optim: torch.optim.Optimizer,
 ):
     # do forward and backward and no optim.step()
-    torch.manual_seed(0)  # set seed for determinism
     optim.zero_grad()
     batch_size = 1024
     device = ta.lazy_device()
 
-    data1 = torch.rand(batch_size, 1024).to(device)
-    data2 = torch.zeros(batch_size, dtype=torch.int64).to(device)
-    loss = model(data1)
-    loss = torch.nn.functional.nll_loss(loss, data2)
+    data = torch.rand(batch_size, 1024).to(device)
+    labels = torch.zeros(batch_size, dtype=torch.int64).to(device)
+    loss = model(data)
+    loss = torch.nn.functional.nll_loss(loss, labels)
     loss.backward()
 
 
 def _check_optim_state(fsdp_osd1, fsdp_osd2):
     state1 = fsdp_osd1['state']
     state2 = fsdp_osd2['state']
+    
+    assert state1.keys() == state2.keys()
     for key in state1.keys():
         dict1 = state1[key]
         dict2 = state2[key]
@@ -87,8 +87,10 @@ def _check_optim_state(fsdp_osd1, fsdp_osd2):
 def _check_optim_param_groups(fsdp_osd1, fsdp_osd2):
     param1 = fsdp_osd1['param_groups']
     param2 = fsdp_osd2['param_groups']
-
+    assert len(param1) == len(param2)
+    
     for (value1, value2) in zip(param1, param2):
+        assert value1.keys() == value2.keys()
         for key in value1.keys():
             assert value1[key] == value2[key]
 
@@ -101,64 +103,65 @@ class FSDPOptimStateTest(MultiProcessTestBase):
 
     @skip_if_lt_x_gpu(2)
     @init_pg("lazy")
-    def test_fsdp_optim_state_flatten_gpu4_4(self):
+    def test_fsdp4_optim_state_flatten(self):
+        torch.manual_seed(0)    # set seed for determinism
         # we first init a model
         config1 = Config()
         config1.dist.fsdp.size = self.world_size
         model_1, optim_1 = _init_model(config=config1)
         # iter 10 steps
-        _step_model(model_1, optim_1, 10)
+        _train_step(model_1, optim_1, 10)
         # get the optim_state_dict for model1
         fsdp_osd1 = FSDP.optim_state_dict(
-            model_1, optim_1, full_state_dict="FULL_STATE_DICT")
+            model_1, optim_1)
 
         # init a new model with same world_size
         config2 = Config()
         config2.dist.fsdp.size = self.world_size
         model_2, optim_2 = _init_model(config=config2)
         # we may change fsdp_osd1 in load_optim_state_dict
-        fsdp_osd1_ = copy.deepcopy(fsdp_osd1)
+        fsdp_osd1_copy = copy.deepcopy(fsdp_osd1)
         # model_2 load the optim_state_dict from model_1
-        fsdp_osd_to_load = FSDP.load_optim_state_dict(model_2, fsdp_osd1_,
-                                                      optim_2,
-                                                      "FULL_STATE_DICT")
+        fsdp_osd_to_load = FSDP.load_optim_state_dict(model_2, fsdp_osd1_copy,
+                                                      optim_2)
         optim_2.load_state_dict(fsdp_osd_to_load)
-        _step_model_without_update(model_2, optim_2)
+        _train_step_without_update(model_2, optim_2)
         fsdp_osd2 = FSDP.optim_state_dict(
-            model_2, optim_2, full_state_dict="FULL_STATE_DICT")
+            model_2, optim_2)
 
         _check_optim_state(fsdp_osd1, fsdp_osd2)
         _check_optim_param_groups(fsdp_osd1, fsdp_osd2)
 
+    
     @skip_if_lt_x_gpu(2)
     @init_pg("lazy")
-    def test_fsdp_optim_state_flatten_gpu4_2(self):
+    def test_fsdp4_to_fsdp2_optim_state_flatten(self):
+        torch.manual_seed(0)    # set seed for determinism
         config1 = Config()
         config1.dist.fsdp.size = self.world_size
         model_1, optim_1 = _init_model(config=config1)
-        _step_model(model_1, optim_1, 10)
+        _train_step(model_1, optim_1, 10)
         fsdp_osd1 = FSDP.optim_state_dict(
-            model_1, optim_1, full_state_dict="FULL_STATE_DICT")
+            model_1, optim_1)
 
-        # we create a new group with world_size / 2
-        new_world_size = self.world_size / 2
+        # we create a new group with world_size // 2
+        new_world_size = self.world_size // 2
         new_group_ranks = list(range(int(new_world_size)))
         new_group = dist.new_group(ranks=new_group_ranks)
 
-        # init model 2 with world_size / 2
+        # init model_2 with new_world_size
         config2 = Config()
         config2.dist.fsdp.size = 2
         model_2, optim_2 = _init_model(config=config2)
         # we may change fsdp_osd1 in load_optim_state_dict
-        fsdp_osd1_ = copy.deepcopy(fsdp_osd1)
+        fsdp_osd1_copy = copy.deepcopy(fsdp_osd1)
         # model_2 load the optim_state_dict from model_1
-        fsdp_osd_to_load = FSDP.load_optim_state_dict(model_2, fsdp_osd1_,
-                                                      optim_2,
-                                                      "FULL_STATE_DICT")
+        fsdp_osd_to_load = FSDP.load_optim_state_dict(model_2, fsdp_osd1_copy,
+                                                      optim_2)
         optim_2.load_state_dict(fsdp_osd_to_load)
-        _step_model_without_update(model_2, optim_2)
+        _train_step_without_update(model_2, optim_2)
         fsdp_osd2 = FSDP.optim_state_dict(
-            model_2, optim_2, full_state_dict="FULL_STATE_DICT")
+            model_2, optim_2)
 
         if self.rank in new_group_ranks:
             _check_optim_state(fsdp_osd1, fsdp_osd2)
