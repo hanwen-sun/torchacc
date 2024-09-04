@@ -255,7 +255,8 @@ class FullyShardedDataParallel(ParallelModule):
             raise NotImplementedError(
                 "we only support 'FULL_SATE_DICT' StateDictType now")
         if not self.model.flatten_parameters:
-            raise NotImplementedError("we only support flatten_parameters=True now")
+            raise NotImplementedError(
+                "we only support flatten_parameters=True now")
 
         shard_meta_data = self.model.get_shard_metadata()
         sharded_optim_state = optim.state_dict()['state']
@@ -342,7 +343,8 @@ class FullyShardedDataParallel(ParallelModule):
             raise NotImplementedError(
                 "we only support 'FULL_SATE_DICT' StateDictType now")
         if not self.model.flatten_parameters:
-            raise NotImplementedError("we only support flatten_parameters=True now")
+            raise NotImplementedError(
+                "we only support flatten_parameters=True now")
         shard_meta_data = self.model.get_shard_metadata()
         unflat_optim_state = optim_state_dict
         flat_optim_state: Dict[str, Any] = {'state': {}, 'param_groups': {}}
