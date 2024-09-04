@@ -107,6 +107,7 @@ def fx_auto_wrap_policy(
         # if not recursing, decide whether we should wrap for the leaf node or reminder
         return module.__class__.__name__ in layer_cls
 
+
 class StateDictType(Enum):
     """
     This enum indicates that which type of ``state_dict`` the FSDP module is
@@ -119,6 +120,7 @@ class StateDictType(Enum):
     """
 
     FULL_STATE_DICT = auto()
+
 
 class FullyShardedDataParallel(ParallelModule):
     """Implementation of fully sharded data parallel.
@@ -218,13 +220,12 @@ class FullyShardedDataParallel(ParallelModule):
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)
 
-
-    
-    def optim_state_dict(self,
-                         optim: torch.optim.Optimizer,
-                         state_dict_type: StateDictType = StateDictType.FULL_STATE_DICT,
-                         rank0_only: bool = True,
-                         cpu_offload: bool = True) -> Dict[str, Any]:
+    def optim_state_dict(
+            self,
+            optim: torch.optim.Optimizer,
+            state_dict_type: StateDictType = StateDictType.FULL_STATE_DICT,
+            rank0_only: bool = True,
+            cpu_offload: bool = True) -> Dict[str, Any]:
         """
         Transform the state-dict of an optimizer corresponding to a sharded model.
 
@@ -251,10 +252,11 @@ class FullyShardedDataParallel(ParallelModule):
         """
         # we only support FULL_STATE_DICT and flatten parameters now
         if state_dict_type != StateDictType.FULL_STATE_DICT:
-            raise NotImplementedError("we only support 'FULL_SATE_DICT' StateDictType now")
+            raise NotImplementedError(
+                "we only support 'FULL_SATE_DICT' StateDictType now")
         if not self.model.flatten_parameters:
             raise NotImplementedError("we only support flatten_parameters now")
-        
+
         shard_meta_data = self.model.get_shard_metadata()
         sharded_optim_state = optim.state_dict()['state']
         optim_state_param_groups = optim.state_dict()['param_groups']
@@ -269,7 +271,7 @@ class FullyShardedDataParallel(ParallelModule):
             consolidate_optim_state_dict[
                 'param_groups'] = optim_state_param_groups
             consolidate_optim_state_dict['param_groups'][0]['params'].clear()
-            
+
         for layer_state, (layer_name, layer_params) in zip(
                 sharded_optim_state.values(),
                 shard_meta_data['flatten_info'].items()):
@@ -282,11 +284,11 @@ class FullyShardedDataParallel(ParallelModule):
             if not rank0_only or self.model.rank == 0:
                 consolidate_optim_state_dict['param_groups'][0][
                     'params'].append(full_names)
-                
+
             for state_name, state_params in layer_state.items():
                 tensor_buffer = optim_utils._all_gather_state(
                     state_params, self.model)
-                
+
                 if not rank0_only or self.model.rank == 0:
                     _, full_params = optim_utils._unflatten_optim_params(
                         tensor_buffer, layer_name, param_names, param_shapes,
@@ -303,11 +305,12 @@ class FullyShardedDataParallel(ParallelModule):
 
         return consolidate_optim_state_dict
 
-    def load_optim_state_dict(self,
-                              optim_state_dict: Dict[str, Any],
-                              optim: torch.optim.Optimizer,
-                              state_dict_type: StateDictType = StateDictType.FULL_STATE_DICT,
-                              rank0_only: bool = True) -> Dict[str, Any]:
+    def load_optim_state_dict(
+            self,
+            optim_state_dict: Dict[str, Any],
+            optim: torch.optim.Optimizer,
+            state_dict_type: StateDictType = StateDictType.FULL_STATE_DICT,
+            rank0_only: bool = True) -> Dict[str, Any]:
         """
         Convert an optimizer state-dict so that it can be loaded into the optimizer associated with the FSDP model.
 
@@ -331,7 +334,8 @@ class FullyShardedDataParallel(ParallelModule):
         """
         # we only support FULL_STATE_DICT and flatten parameters now
         if state_dict_type != StateDictType.FULL_STATE_DICT:
-            raise NotImplementedError("we only support 'FULL_SATE_DICT' StateDictType now")
+            raise NotImplementedError(
+                "we only support 'FULL_SATE_DICT' StateDictType now")
         if not self.model.flatten_parameters:
             raise NotImplementedError("we only support flatten_parameters now")
         shard_meta_data = self.model.get_shard_metadata()
@@ -356,7 +360,7 @@ class FullyShardedDataParallel(ParallelModule):
                 # we need the params of a whole layer state to be flatten and shard
                 for name in full_names:
                     state_params = unflat_state[name][state_name]
-                    # all ranks have same scalar tensor(step) which has been broadcasted in 
+                    # all ranks have same scalar tensor(step) which has been broadcasted in
                     # broadcast_processed_state above
                     if isinstance(state_params,
                                   torch.Tensor) and state_params.dim() == 0:

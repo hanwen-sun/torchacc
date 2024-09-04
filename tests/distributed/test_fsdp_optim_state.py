@@ -73,7 +73,7 @@ def _train_step_without_update(
 def _check_optim_state(fsdp_osd1, fsdp_osd2):
     state1 = fsdp_osd1['state']
     state2 = fsdp_osd2['state']
-    
+
     assert state1.keys() == state2.keys()
     for key in state1.keys():
         dict1 = state1[key]
@@ -88,7 +88,7 @@ def _check_optim_param_groups(fsdp_osd1, fsdp_osd2):
     param1 = fsdp_osd1['param_groups']
     param2 = fsdp_osd2['param_groups']
     assert len(param1) == len(param2)
-    
+
     for (value1, value2) in zip(param1, param2):
         assert value1.keys() == value2.keys()
         for key in value1.keys():
@@ -104,7 +104,7 @@ class FSDPOptimStateTest(MultiProcessTestBase):
     @skip_if_lt_x_gpu(2)
     @init_pg("lazy")
     def test_fsdp4_optim_state_flatten(self):
-        torch.manual_seed(0)    # set seed for determinism
+        torch.manual_seed(0)  # set seed for determinism
         # we first init a model
         config1 = Config()
         config1.dist.fsdp.size = self.world_size
@@ -112,8 +112,7 @@ class FSDPOptimStateTest(MultiProcessTestBase):
         # iter 10 steps
         _train_step(model_1, optim_1, 10)
         # get the optim_state_dict for model1
-        fsdp_osd1 = FSDP.optim_state_dict(
-            model_1, optim_1)
+        fsdp_osd1 = FSDP.optim_state_dict(model_1, optim_1)
 
         # init a new model with same world_size
         config2 = Config()
@@ -126,23 +125,20 @@ class FSDPOptimStateTest(MultiProcessTestBase):
                                                       optim_2)
         optim_2.load_state_dict(fsdp_osd_to_load)
         _train_step_without_update(model_2, optim_2)
-        fsdp_osd2 = FSDP.optim_state_dict(
-            model_2, optim_2)
+        fsdp_osd2 = FSDP.optim_state_dict(model_2, optim_2)
 
         _check_optim_state(fsdp_osd1, fsdp_osd2)
         _check_optim_param_groups(fsdp_osd1, fsdp_osd2)
 
-    
     @skip_if_lt_x_gpu(2)
     @init_pg("lazy")
     def test_fsdp4_to_fsdp2_optim_state_flatten(self):
-        torch.manual_seed(0)    # set seed for determinism
+        torch.manual_seed(0)  # set seed for determinism
         config1 = Config()
         config1.dist.fsdp.size = self.world_size
         model_1, optim_1 = _init_model(config=config1)
         _train_step(model_1, optim_1, 10)
-        fsdp_osd1 = FSDP.optim_state_dict(
-            model_1, optim_1)
+        fsdp_osd1 = FSDP.optim_state_dict(model_1, optim_1)
 
         # we create a new group with world_size // 2
         new_world_size = self.world_size // 2
@@ -160,8 +156,7 @@ class FSDPOptimStateTest(MultiProcessTestBase):
                                                       optim_2)
         optim_2.load_state_dict(fsdp_osd_to_load)
         _train_step_without_update(model_2, optim_2)
-        fsdp_osd2 = FSDP.optim_state_dict(
-            model_2, optim_2)
+        fsdp_osd2 = FSDP.optim_state_dict(model_2, optim_2)
 
         if self.rank in new_group_ranks:
             _check_optim_state(fsdp_osd1, fsdp_osd2)
