@@ -247,7 +247,7 @@ class FullyShardedDataParallel(ParallelModule):
 
         Returns:
             Dict[str, Any]: A :class:`dict` containing the optimizer state for
-            ``model``. The sharding of the optimizer state is based on
+            self.model. The sharding of the optimizer state is based on
             ``state_dict_type``.
         """
         # we only support FULL_STATE_DICT and flatten parameters now
@@ -331,6 +331,11 @@ class FullyShardedDataParallel(ParallelModule):
                 The default value is FULL_STATE_DICT.
             rank0_only: (bool = True): control whether load state_dict only from
                 rank0 at the begining.
+        
+        Returns:
+            Dict[str, Any]: A :class:`dict` containing the optimizer state for
+            self.model. The sharding of the optimizer state is based on
+            ``state_dict_type``.
         """
         # we only support FULL_STATE_DICT and flatten parameters now
         if state_dict_type != StateDictType.FULL_STATE_DICT:
