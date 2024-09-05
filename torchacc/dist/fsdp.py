@@ -2,6 +2,7 @@ import functools
 from types import MethodType
 from typing import Any, Dict, Optional, Set
 from enum import auto, Enum
+import copy
 
 import torch
 import torch.fx as fx
@@ -340,6 +341,9 @@ class FullyShardedDataParallel(ParallelModule):
             Dict[str, Any]: A :class:`dict` containing the optimizer state for
             self.model. The sharding of the optimizer state is based on
             ``state_dict_type``.
+            if specified with rank0_only, only rank0 return the full state-dict,
+            other ranks return dict with keys but no value like:
+            {'state': {'name1': {}}, 'param_groups': {}}
         """
         # we only support FULL_STATE_DICT and flatten parameters now
         if state_dict_type != StateDictType.FULL_STATE_DICT:
@@ -394,7 +398,8 @@ class FullyShardedDataParallel(ParallelModule):
 
         # first params is [0, the number of fsdp wrapped layer - 1]
         # and other params are all none
-        flat_optim_state['param_groups'] = unflat_optim_state['param_groups']
+        # we use deepcopy to avoid the modify of original optim_state_dict here
+        flat_optim_state['param_groups'] = copy.deepcopy(unflat_optim_state['param_groups'])
         flat_optim_state['param_groups'][0]['params'] = [
             i for i in range(0, len(flat_optim_state['state'].keys()))
         ]
