@@ -83,10 +83,11 @@ def _check_optim_state(fsdp_osd1, fsdp_osd2):
             tensor2 = dict2[state_name]
             assert torch.equal(tensor1, tensor2)
 
+
 def _check_optim_param_groups(fsdp_osd1, fsdp_osd2):
     param1 = fsdp_osd1['param_groups']
     param2 = fsdp_osd2['param_groups']
-    
+
     # the length of param is same to the wrapped layer
     assert len(param1) == len(param2)
 
@@ -123,15 +124,14 @@ class FSDPOptimStateTest(MultiProcessTestBase):
         # model_2 load the optim_state_dict from model_1
         fsdp_osd_to_load = FSDP.load_optim_state_dict(model_2, fsdp_osd1,
                                                       optim_2)
-        
+
         optim_2.load_state_dict(fsdp_osd_to_load)
         _train_step_without_update(model_2, optim_2)
         fsdp_osd2 = FSDP.optim_state_dict(model_2, optim_2)
-        
+
         _check_optim_state(fsdp_osd1, fsdp_osd2)
         _check_optim_param_groups(fsdp_osd1, fsdp_osd2)
 
-    
     @skip_if_lt_x_gpu(2)
     @init_pg("lazy")
     def test_fsdp4_to_fsdp2_optim_state_flatten(self):
@@ -164,4 +164,3 @@ class FSDPOptimStateTest(MultiProcessTestBase):
         if self.rank in new_group_ranks:
             _check_optim_state(fsdp_osd1, fsdp_osd2)
             _check_optim_param_groups(fsdp_osd1, fsdp_osd2)
-    
