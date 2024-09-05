@@ -350,7 +350,7 @@ class FullyShardedDataParallel(ParallelModule):
                 "we only support flatten_parameters=True now")
         shard_meta_data = self.model.get_shard_metadata()
         unflat_optim_state = optim_state_dict
-        
+
         flat_optim_state: Dict[str, Any] = {'state': {}, 'param_groups': {}}
 
         # broadcast on global ranks instead of sharding_groups
@@ -382,14 +382,13 @@ class FullyShardedDataParallel(ParallelModule):
                     tensor_buffer = optim_utils._broadcast_state(
                         state_params, self.model)
                     tensor_buffer_list.append(tensor_buffer)
-                
+
                 flat_tensor = optim_utils._flatten_optim_state(
-                     tensor_buffer_list)
-                
+                    tensor_buffer_list)
+
                 if len(flat_tensor):
                     flat_value[state_name] = self.model._get_shard(flat_tensor)
 
-            
             flat_optim_state['state'][idx] = flat_value
             xm.mark_step()
 
