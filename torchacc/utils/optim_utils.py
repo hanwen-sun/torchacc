@@ -118,16 +118,10 @@ def _all_gather_state(state_params, model):
 
     return tensor_buffer
 
-
-def _flatten_optim_state(unflat_optim_state, state_name, full_names):
-    param_list = []
-    for name in full_names:
-        param_list.append(unflat_optim_state[name][state_name])
-
-    # scalar tensor do not need flatten
-    if param_list[0].dim() == 0:
-        return param_list[0]
-
+def _flatten_optim_state(param_list):
+    if len(param_list) == 0:
+        return param_list
+    
     flat_tensors = [torch.flatten(param) for param in param_list]
 
     return torch.cat(flat_tensors, dim=0)

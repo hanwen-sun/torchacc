@@ -235,15 +235,17 @@ class FullyShardedDataParallel(ParallelModule):
         Rank0 only and CPU offload can be specified to avoid OOM.
         
         Args:
-            optim (torch.optim.Optimizer): Optimizer for self.model 's
+            optim (torch.optim.Optimizer): Optimizer for self.model's
                 parameters.
-            state_dict_type: (StateDictType = StateDictType.FULL_STATE_DICT):
+            state_dict_type: (StateDictType):
                 which type of ``state_dict`` the FSDP module is 
                 currently processing (returning or loading)
                 The default value is FULL_STATE_DICT.
-            rank0_only: (bool = True): control whether only rank0 save the
+            rank0_only: (bool): control whether only rank0 return the
                 state-dict of optimizer.
-            cpu_offload: (bool = True):  whether move the state-dict to cpu.
+                The default value is True.
+            cpu_offload: (bool):  whether move the state-dict to cpu.
+                The default value is True.
 
         Returns:
             Dict[str, Any]: A :class:`dict` containing the optimizer state for
@@ -323,15 +325,16 @@ class FullyShardedDataParallel(ParallelModule):
         The given state-dict can be transformed from one type now: full optimizer state_dict.
         
         Args:
-            optim (torch.optim.Optimizer): Optimizer for ``model`` 's
+            optim (torch.optim.Optimizer): Optimizer for self.model's
                 parameters.
             optim_state_dict (Dict[str, Any]): The optimizer states to be loaded.
-            state_dict_type(StateDictType = StateDictType.FULL_STATE_DICT):  
+            state_dict_type(StateDictType):  
                 which type of ``state_dict`` the FSDP module is 
                 currently processing (returning or loading)
                 The default value is FULL_STATE_DICT.
-            rank0_only: (bool = True): control whether load state_dict only from
+            rank0_only: (bool): control whether load state_dict only from
                 rank0 at the begining.
+                The default value is True.
         
         Returns:
             Dict[str, Any]: A :class:`dict` containing the optimizer state for
@@ -347,14 +350,15 @@ class FullyShardedDataParallel(ParallelModule):
                 "we only support flatten_parameters=True now")
         shard_meta_data = self.model.get_shard_metadata()
         unflat_optim_state = optim_state_dict
+        
         flat_optim_state: Dict[str, Any] = {'state': {}, 'param_groups': {}}
 
         # broadcast on global ranks instead of sharding_groups
         unflat_optim_state = optim_utils._broadcast_processed_state(
             unflat_optim_state, xm.get_ordinal(), xm.xrt_world_size())
         unflat_state = unflat_optim_state['state']
-        # flatten and sharded state_dict
 
+        # flatten and sharded state_dict
         for idx, (layer_name, (params)) in enumerate(
                 shard_meta_data['flatten_info'].items()):
             param_names, _, _ = params
@@ -364,6 +368,7 @@ class FullyShardedDataParallel(ParallelModule):
             flat_value: Dict[str, Any] = {}
             # broadcast tensor to other ranks per layer per state
             for state_name in unflat_state[full_names[0]].keys():
+                tensor_buffer_list = []
                 # we need the params of a whole layer state to be flatten and shard
                 for name in full_names:
                     state_params = unflat_state[name][state_name]
@@ -376,13 +381,15 @@ class FullyShardedDataParallel(ParallelModule):
 
                     tensor_buffer = optim_utils._broadcast_state(
                         state_params, self.model)
-                    unflat_state[name][state_name] = tensor_buffer
-                # flatten and get_shard immediately
+                    tensor_buffer_list.append(tensor_buffer)
+                
                 flat_tensor = optim_utils._flatten_optim_state(
-                    unflat_state, state_name, full_names)
-                if flat_tensor.dim() != 0:
+                     tensor_buffer_list)
+                
+                if len(flat_tensor):
                     flat_value[state_name] = self.model._get_shard(flat_tensor)
 
+            
             flat_optim_state['state'][idx] = flat_value
             xm.mark_step()
 
