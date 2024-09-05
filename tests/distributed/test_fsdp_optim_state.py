@@ -141,6 +141,7 @@ class FSDPOptimStateTest(MultiProcessTestBase):
         fsdp_osd1 = FSDP.optim_state_dict(model_1, optim_1)
 
         # we create a new group with world_size // 2
+        assert self.world_size % 2 == 0
         new_world_size = self.world_size // 2
         new_group_ranks = list(range(int(new_world_size)))
         new_group = dist.new_group(ranks=new_group_ranks)
