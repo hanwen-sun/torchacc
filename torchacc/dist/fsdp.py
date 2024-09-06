@@ -252,6 +252,9 @@ class FullyShardedDataParallel(ParallelModule):
             Dict[str, Any]: A :class:`dict` containing the optimizer state for
             self.model. The sharding of the optimizer state is based on
             ``state_dict_type``.
+            if specified with rank0_only, only rank0 return the full state-dict,
+            other ranks return dict with keys but no value like:
+            {'state': {'name1': {}}, 'param_groups': {}}
         """
         # we only support FULL_STATE_DICT and flatten parameters now
         if state_dict_type != StateDictType.FULL_STATE_DICT:
@@ -281,7 +284,7 @@ class FullyShardedDataParallel(ParallelModule):
                 shard_meta_data['flatten_info'].items()):
             param_names, param_shapes, param_numels = layer_params
             # get full_param_names of each layer in optim_state_dict
-            full_names = optim_utils._get_layer_full_names(
+            full_names = optim_utils.get_layer_full_names(
                 layer_name, param_names)
             unflat_state_dict = {fn: {} for fn in full_names}
 
@@ -290,11 +293,11 @@ class FullyShardedDataParallel(ParallelModule):
                     'params'].append(full_names)
 
             for state_name, state_params in layer_state.items():
-                tensor_buffer = optim_utils._all_gather_state(
+                tensor_buffer = optim_utils.all_gather_state(
                     state_params, self.model)
 
                 if not rank0_only or self.model.rank == 0:
-                    _, full_params = optim_utils._unflatten_optim_params(
+                    _, full_params = optim_utils.unflatten_optim_params(
                         tensor_buffer, layer_name, param_names, param_shapes,
                         param_numels)
 
@@ -341,9 +344,6 @@ class FullyShardedDataParallel(ParallelModule):
             Dict[str, Any]: A :class:`dict` containing the optimizer state for
             self.model. The sharding of the optimizer state is based on
             ``state_dict_type``.
-            if specified with rank0_only, only rank0 return the full state-dict,
-            other ranks return dict with keys but no value like:
-            {'state': {'name1': {}}, 'param_groups': {}}
         """
         # we only support FULL_STATE_DICT and flatten parameters now
         if state_dict_type != StateDictType.FULL_STATE_DICT:
@@ -354,20 +354,58 @@ class FullyShardedDataParallel(ParallelModule):
                 "we only support flatten_parameters=True now")
         shard_meta_data = self.model.get_shard_metadata()
         unflat_optim_state = optim_state_dict
-
         flat_optim_state: Dict[str, Any] = {'state': {}, 'param_groups': {}}
 
+        # we only need to flatten and shard
+        if not rank0_only:
+            unflat_state = unflat_optim_state['state']
+            # first params is [0, the number of fsdp wrapped layer - 1]
+            # and other params are all none
+            # we use deepcopy to avoid the modify of original optim_state_dict here
+            flat_optim_state['param_groups'] = copy.deepcopy(
+                unflat_optim_state['param_groups'])
+            for idx, (layer_name, (params)) in enumerate(
+                    shard_meta_data['flatten_info'].items()):
+                param_names, _, _ = params
+                full_names = optim_utils.get_layer_full_names(
+                    layer_name, param_names)
+                flat_value: Dict[str, Any] = {}
+                for state_name in unflat_state[full_names[0]].keys():
+                    tensor_buffer_list = []
+                    for name in full_names:
+                        state_params = unflat_state[name][state_name]
+                        if isinstance(state_params,
+                                      torch.Tensor) and state_params.dim() == 0:
+                            flat_value[state_name] = state_params
+                            break
+                        tensor_buffer_list.append(
+                            unflat_state[name][state_name])
+                    flat_tensor = optim_utils.flatten_optim_state(
+                        tensor_buffer_list)
+
+                    if len(flat_tensor):
+                        flat_value[state_name] = self.model._get_shard(
+                            flat_tensor)
+                    xm.mark_step()
+                flat_optim_state['state'][idx] = flat_value
+            flat_optim_state['param_groups'][0]['params'] = [
+                i for i in range(0, len(flat_optim_state['state'].keys()))
+            ]
+
+            return flat_optim_state
+
         # broadcast on global ranks instead of sharding_groups
-        unflat_optim_state = optim_utils._broadcast_processed_state(
+        unflat_optim_state = optim_utils.broadcast_processed_state(
             unflat_optim_state, xm.get_ordinal(), xm.xrt_world_size())
         unflat_state = unflat_optim_state['state']
-
+        flat_optim_state['param_groups'] = copy.deepcopy(
+            unflat_optim_state['param_groups'])
         # flatten and sharded state_dict
         for idx, (layer_name, (params)) in enumerate(
                 shard_meta_data['flatten_info'].items()):
             param_names, _, _ = params
-            # names of a flatten layer
-            full_names = optim_utils._get_layer_full_names(
+            # names of a flatten layer (the state_dict may contain many flatten layers)
+            full_names = optim_utils.get_layer_full_names(
                 layer_name, param_names)
             flat_value: Dict[str, Any] = {}
             # broadcast tensor to other ranks per layer per state
@@ -383,24 +421,18 @@ class FullyShardedDataParallel(ParallelModule):
                         flat_value[state_name] = state_params
                         break
 
-                    tensor_buffer = optim_utils._broadcast_state(
+                    tensor_buffer = optim_utils.broadcast_state(
                         state_params, self.model)
                     tensor_buffer_list.append(tensor_buffer)
 
-                flat_tensor = optim_utils._flatten_optim_state(
+                flat_tensor = optim_utils.flatten_optim_state(
                     tensor_buffer_list)
 
                 if len(flat_tensor):
                     flat_value[state_name] = self.model._get_shard(flat_tensor)
+                xm.mark_step()
 
             flat_optim_state['state'][idx] = flat_value
-            xm.mark_step()
-
-        # first params is [0, the number of fsdp wrapped layer - 1]
-        # and other params are all none
-        # we use deepcopy to avoid the modify of original optim_state_dict here
-        flat_optim_state['param_groups'] = copy.deepcopy(
-            unflat_optim_state['param_groups'])
         flat_optim_state['param_groups'][0]['params'] = [
             i for i in range(0, len(flat_optim_state['state'].keys()))
         ]

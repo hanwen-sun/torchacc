@@ -7,7 +7,7 @@ import torch_xla.core.xla_model as xm
 
 
 # transform name from shard_meta_data to original optim state_dict name of each layer
-def _get_layer_full_names(layer_name, param_names):
+def get_layer_full_names(layer_name, param_names):
     full_names = []
 
     prefix = None
@@ -30,9 +30,9 @@ def _get_layer_full_names(layer_name, param_names):
     return full_names
 
 
-def _unflatten_optim_params(params, layer_name, param_names, param_shapes,
-                            param_numels):
-    full_names = _get_layer_full_names(layer_name, param_names)
+def unflatten_optim_params(params, layer_name, param_names, param_shapes,
+                           param_numels):
+    full_names = get_layer_full_names(layer_name, param_names)
 
     if params.dim() == 0:
         full_params = [params for _ in range(len(full_names))]
@@ -69,8 +69,8 @@ def _cleanup_gloo_distributed(pg):
     dist.destroy_process_group(pg)
 
 
-def _broadcast_processed_state(optim_state: dict[str, any], rank: int,
-                               world_size: int):
+def broadcast_processed_state(optim_state: dict[str, any], rank: int,
+                              world_size: int):
     objects: list[Any] = [None]
     if rank == 0:
         objects[0] = tree_map_only(
@@ -90,7 +90,7 @@ def _broadcast_processed_state(optim_state: dict[str, any], rank: int,
         return objects[0]
 
 
-def _broadcast_state(state_params, model):
+def broadcast_state(state_params, model):
     device = model.xla_device
     if model.rank == 0 and isinstance(state_params, torch.Tensor):
         tensor_buffer = state_params.to(device)
@@ -109,7 +109,7 @@ def _broadcast_state(state_params, model):
     return tensor_buffer
 
 
-def _all_gather_state(state_params, model):
+def all_gather_state(state_params, model):
     if state_params.dim() == 0:
         return state_params
 
@@ -119,7 +119,7 @@ def _all_gather_state(state_params, model):
     return tensor_buffer
 
 
-def _flatten_optim_state(param_list):
+def flatten_optim_state(param_list):
     if len(param_list) == 0:
         return param_list
 
