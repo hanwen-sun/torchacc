@@ -234,28 +234,34 @@ class FullyShardedDataParallel(ParallelModule):
                               optim: torch.optim.Optimizer,
                               rank0_only: bool = True,
                               cpu_offload: bool = True) -> Dict[str, Any]:
-        """
-        Transform the state-dict of an optimizer corresponding to a sharded model to full
-        optimizer state_dict.
+        """Return the full optimizer state-dict.
 
-        For full optimizer state_dict, all states are unflattened and not sharded.
-        Rank0 only and CPU offload can be specified to avoid OOM.
-        
+        Consolidates the full optimizer state on rank 0 and returns it
+        as a :class:`dict` following the convention of
+        :meth:`torch.optim.Optimizer.state_dict`, i.e. with keys ``"state"``
+        and ``"param_groups"``. The flattened parameters in ``FSDP`` modules
+        contained in ``model`` are mapped back to their unflattened parameters.
+
+        .. warning:: This needs to be called on all ranks since it uses
+            collective communications. However, if ``rank0_only=True``, then
+            the state dict is only populated on rank 0, and all other ranks
+            return an empty :class:`dict`.
+
         Args:
-            optim (torch.optim.Optimizer): Optimizer for self.model's
+            optim (torch.optim.Optimizer): Optimizer for self.model 's
                 parameters.
-            rank0_only: (bool): control whether only rank0 return the
-                state-dict of optimizer.
-                The default value is True.
-            cpu_offload: (bool):  whether move the state-dict to cpu.
-                The default value is True.
+            rank0_only (bool): If ``True``, return the populated :class:`dict`
+                only on rank 0; if ``False``, return it on all ranks. (Default:
+                ``True``)
+            cpu_offload(bool): If ``True``, offload the state-dict to cpu. (Default:
+            ``True``)
 
         Returns:
-            Dict[str, Any]: A :class:`dict` containing the full optimizer state for
-            self.model. 
-            if specified with rank0_only, only rank0 return the full state-dict,
-            other ranks return dict with keys but no value like:
-            {'state': {'name1': {}}, 'param_groups': {}}
+            Dict[str, Any]: A :class:`dict` containing the optimizer state for
+            ``model`` 's original unflattened parameters and including keys
+            "state" and "param_groups" following the convention of
+            :meth:`torch.optim.Optimizer.state_dict`. If ``rank0_only=True``,
+            then nonzero ranks return an :class:`dict` with keys but empty value.
         """
         # we only support FULL_STATE_DICT and flatten parameters now
         if not self.model.flatten_parameters:
@@ -314,18 +320,14 @@ class FullyShardedDataParallel(ParallelModule):
                               optim_state_dict: Dict[str, Any],
                               rank0_only: bool = True) -> Dict[str, Any]:
         """
-        Convert an optimizer state-dict so that it can be loaded into the optimizer associated with the FSDP model.
-
-        Given a ``optim_state_dict`` that is transformed through
-        :meth:`optim_state_dict`, it gets converted to the optimizer
-        state_dict that can be loaded to ``optim`` which is the optimizer for
-        self.model.
+        Convert an optimizer state-dict so that it can be loaded into the
+        optimizer associated with the FSDP model.
+        We judge whether the optim_state_dict is sharded automatically
                 
         Args:
             optim_state_dict (Dict[str, Any]): The optimizer states to be loaded.
             rank0_only: (bool): control whether load state_dict only from
-                rank0 at the begining.
-                The default value is True.
+                rank0 at the begining.(Default: ``True``)
         
         Returns:
             Dict[str, Any]: A :class:`dict` containing the optimizer state for
