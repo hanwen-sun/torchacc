@@ -109,20 +109,6 @@ def fx_auto_wrap_policy(
         return module.__class__.__name__ in layer_cls
 
 
-class StateDictType(Enum):
-    """
-    This enum indicates that which type of ``state_dict`` the FSDP module is
-    currently processing (returning or loading).
-    The default value is FULL_STATE_DICT.
-    ..note::
-        FSDP currently supports one type of ``state_dict``:
-            ``optim_state_dict/load_optim_state_dict`: this pair of APIs return and load
-            the non-sharded, unflattened parameters.
-    """
-
-    FULL_STATE_DICT = auto()
-
-
 class FullyShardedDataParallel(ParallelModule):
     """Implementation of fully sharded data parallel.
 
@@ -221,16 +207,36 @@ class FullyShardedDataParallel(ParallelModule):
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)
 
-    def optim_state_dict(
-            self,
-            optim: torch.optim.Optimizer,
-            state_dict_type: StateDictType = StateDictType.FULL_STATE_DICT,
-            rank0_only: bool = True,
-            cpu_offload: bool = True) -> Dict[str, Any]:
+    def sharded_optim_state_dict(
+        self,
+        optim: torch.optim.Optimizer,
+    ):
         """
-        Transform the state-dict of an optimizer corresponding to a sharded model.
+        Transform the state-dict of an optimizer corresponding to a sharded model to sharded
+        optimizer state_dict.
+        
+        Args:
+            optim (torch.optim.Optimizer): Optimizer for self.model's
+                parameters.
 
-        The given state-dict can be transformed to one type now: full optimizer state_dict.
+        Returns:
+            Dict[str, Any]: A :class:`dict` containing the optimizer state for
+            self.model. Each rank get the sharded optim state added with shard_metadata.
+        """
+        optimizer = {
+            "optimizer": optim.state_dict(),
+            "shard_metadata": self.model.get_shard_metadata(),
+        }
+
+        return optimizer
+
+    def full_optim_state_dict(self,
+                              optim: torch.optim.Optimizer,
+                              rank0_only: bool = True,
+                              cpu_offload: bool = True) -> Dict[str, Any]:
+        """
+        Transform the state-dict of an optimizer corresponding to a sharded model to full
+        optimizer state_dict.
 
         For full optimizer state_dict, all states are unflattened and not sharded.
         Rank0 only and CPU offload can be specified to avoid OOM.
@@ -238,10 +244,6 @@ class FullyShardedDataParallel(ParallelModule):
         Args:
             optim (torch.optim.Optimizer): Optimizer for self.model's
                 parameters.
-            state_dict_type: (StateDictType):
-                which type of ``state_dict`` the FSDP module is 
-                currently processing (returning or loading)
-                The default value is FULL_STATE_DICT.
             rank0_only: (bool): control whether only rank0 return the
                 state-dict of optimizer.
                 The default value is True.
@@ -249,17 +251,13 @@ class FullyShardedDataParallel(ParallelModule):
                 The default value is True.
 
         Returns:
-            Dict[str, Any]: A :class:`dict` containing the optimizer state for
-            self.model. The sharding of the optimizer state is based on
-            ``state_dict_type``.
+            Dict[str, Any]: A :class:`dict` containing the full optimizer state for
+            self.model. 
             if specified with rank0_only, only rank0 return the full state-dict,
             other ranks return dict with keys but no value like:
             {'state': {'name1': {}}, 'param_groups': {}}
         """
         # we only support FULL_STATE_DICT and flatten parameters now
-        if state_dict_type != StateDictType.FULL_STATE_DICT:
-            raise NotImplementedError(
-                "we only support 'FULL_SATE_DICT' StateDictType now")
         if not self.model.flatten_parameters:
             raise NotImplementedError(
                 "we only support flatten_parameters=True now")
@@ -312,12 +310,9 @@ class FullyShardedDataParallel(ParallelModule):
 
         return consolidate_optim_state_dict
 
-    def load_optim_state_dict(
-            self,
-            optim_state_dict: Dict[str, Any],
-            optim: torch.optim.Optimizer,
-            state_dict_type: StateDictType = StateDictType.FULL_STATE_DICT,
-            rank0_only: bool = True) -> Dict[str, Any]:
+    def load_optim_state_dict(self,
+                              optim_state_dict: Dict[str, Any],
+                              rank0_only: bool = True) -> Dict[str, Any]:
         """
         Convert an optimizer state-dict so that it can be loaded into the optimizer associated with the FSDP model.
 
@@ -325,30 +320,21 @@ class FullyShardedDataParallel(ParallelModule):
         :meth:`optim_state_dict`, it gets converted to the optimizer
         state_dict that can be loaded to ``optim`` which is the optimizer for
         self.model.
-        
-        The given state-dict can be transformed from one type now: full optimizer state_dict.
-        
+                
         Args:
-            optim (torch.optim.Optimizer): Optimizer for self.model's
-                parameters.
             optim_state_dict (Dict[str, Any]): The optimizer states to be loaded.
-            state_dict_type(StateDictType):  
-                which type of ``state_dict`` the FSDP module is 
-                currently processing (returning or loading)
-                The default value is FULL_STATE_DICT.
             rank0_only: (bool): control whether load state_dict only from
                 rank0 at the begining.
                 The default value is True.
         
         Returns:
             Dict[str, Any]: A :class:`dict` containing the optimizer state for
-            self.model. The sharding of the optimizer state is based on
-            ``state_dict_type``.
+            self.model which is sharded.
         """
-        # we only support FULL_STATE_DICT and flatten parameters now
-        if state_dict_type != StateDictType.FULL_STATE_DICT:
-            raise NotImplementedError(
-                "we only support 'FULL_SATE_DICT' StateDictType now")
+        # for sharded optim_state, we return directly
+        if 'shard_metadata' in optim_state_dict.keys():
+            return optim_state_dict['optimizer']
+
         if not self.model.flatten_parameters:
             raise NotImplementedError(
                 "we only support flatten_parameters=True now")
