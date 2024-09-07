@@ -58,10 +58,8 @@ class _PosDimTensorInfo(NamedTuple):
     dtype: torch.dtype
 
 
-def _setup_gloo_distributed(world_size):
-    # create a new gloo process group
-    new_group_ranks = [r for r in range(world_size)]
-    pg = dist.new_group(ranks=new_group_ranks, backend="gloo")
+def _setup_gloo_distributed(group):
+    pg = dist.new_group(ranks=group, backend="gloo")
     return pg
 
 
@@ -69,8 +67,8 @@ def _cleanup_gloo_distributed(pg):
     dist.destroy_process_group(pg)
 
 
-def broadcast_processed_state(optim_state: dict[str, any], rank: int,
-                              world_size: int):
+def broadcast_processed_state(optim_state: dict[str, any], rank,
+                              sharding_groups):
     objects: list[Any] = [None]
     if rank == 0:
         objects[0] = tree_map_only(
@@ -79,11 +77,17 @@ def broadcast_processed_state(optim_state: dict[str, any], rank: int,
                 v.shape, v.dtype),  # type: ignore[union-attr]
             optim_state,
         )
+    ordinal = xm.get_ordinal()
+    new_group = []
 
-    pg_group = _setup_gloo_distributed(world_size)
-    dist.broadcast_object_list(objects, src=0, group=pg_group)
+    for group in sharding_groups:
+        if ordinal in group:
+            new_group = group
+            break
+
+    pg_group = _setup_gloo_distributed(new_group)
+    dist.broadcast_object_list(objects, src=new_group[0], group=pg_group)
     _cleanup_gloo_distributed(pg_group)
-
     if rank == 0:
         return optim_state
     else:

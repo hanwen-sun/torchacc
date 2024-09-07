@@ -394,9 +394,8 @@ class FullyShardedDataParallel(ParallelModule):
 
             return flat_optim_state
 
-        # broadcast on global ranks instead of sharding_groups
         unflat_optim_state = optim_utils.broadcast_processed_state(
-            unflat_optim_state, xm.get_ordinal(), xm.xrt_world_size())
+            unflat_optim_state, self.model.rank, self.model.sharding_groups)
         unflat_state = unflat_optim_state['state']
         flat_optim_state['param_groups'] = copy.deepcopy(
             unflat_optim_state['param_groups'])

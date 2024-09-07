@@ -108,11 +108,14 @@ def _get_fsdp_osd_1(world_size, rank0_only):
     return fsdp_osd1
 
 
-def _get_fsdp_osd_2(world_size, fsdp_osd1, rank0_only):
+def _get_fsdp_osd_2(world_size, rank, new_group_rank, fsdp_osd1, rank0_only):
     # init a new model with new world_size
     config2 = Config()
     config2.dist.fsdp.size = world_size
     model_2, optim_2 = _init_model(config=config2)
+
+    if rank not in new_group_rank:
+        return
     # model_2 load the optim_state_dict from model_1
     fsdp_osd_to_load = FSDP.load_optim_state_dict(
         model_2, fsdp_osd1, optim_2, rank0_only=rank0_only)
@@ -132,28 +135,37 @@ class FSDPOptimStateTest(MultiProcessTestBase):
     @init_pg("lazy")
     def test_fsdp4_optim_state_rank0_only_flatten(self):
         fsdp_osd1 = _get_fsdp_osd_1(self.world_size, True)
-        fsdp_osd2 = _get_fsdp_osd_2(self.world_size, fsdp_osd1, True)
-        _check_optim_state(fsdp_osd1, fsdp_osd2)
-        _check_optim_param_groups(fsdp_osd1, fsdp_osd2)
-
-    @skip_if_lt_x_gpu(2)
-    @init_pg("lazy")
-    def test_fsdp4_optim_state_not_rank0_only_flatten(self):
-        fsdp_osd1 = _get_fsdp_osd_1(self.world_size, True)
-        # create new communication group
-        assert self.world_size % 2 == 0
-        new_world_size = self.world_size // 2
+        new_world_size = self.world_size
         new_group_ranks = list(range(int(new_world_size)))
-        new_group = dist.new_group(ranks=new_group_ranks)
-        fsdp_osd2 = _get_fsdp_osd_2(self.world_size, fsdp_osd1, True)
+        fsdp_osd2 = _get_fsdp_osd_2(self.world_size, self.rank, new_group_ranks,
+                                    fsdp_osd1, True)
         _check_optim_state(fsdp_osd1, fsdp_osd2)
         _check_optim_param_groups(fsdp_osd1, fsdp_osd2)
 
     @skip_if_lt_x_gpu(2)
     @init_pg("lazy")
     def test_fsdp4_to_2_optim_state_rank0_only_flatten(self):
+        fsdp_osd1 = _get_fsdp_osd_1(self.world_size, True)
+        # create new communication group
+        assert self.world_size % 2 == 0
+        new_world_size = self.world_size // 2
+        new_group_ranks = list(range(int(new_world_size)))
+        new_group = dist.new_group(ranks=new_group_ranks)
+        fsdp_osd2 = _get_fsdp_osd_2(new_world_size, self.rank, new_group_ranks,
+                                    fsdp_osd1, True)
+
+        if self.rank in new_group_ranks:
+            _check_optim_state(fsdp_osd1, fsdp_osd2)
+            _check_optim_param_groups(fsdp_osd1, fsdp_osd2)
+
+    @skip_if_lt_x_gpu(2)
+    @init_pg("lazy")
+    def test_fsdp4_optim_state_not_rank0_only_flatten(self):
         fsdp_osd1 = _get_fsdp_osd_1(self.world_size, False)
-        fsdp_osd2 = _get_fsdp_osd_2(self.world_size, fsdp_osd1, False)
+        new_world_size = self.world_size
+        new_group_ranks = list(range(int(new_world_size)))
+        fsdp_osd2 = _get_fsdp_osd_2(self.world_size, self.rank, new_group_ranks,
+                                    fsdp_osd1, False)
         _check_optim_state(fsdp_osd1, fsdp_osd2)
         _check_optim_param_groups(fsdp_osd1, fsdp_osd2)
 
@@ -165,6 +177,8 @@ class FSDPOptimStateTest(MultiProcessTestBase):
         new_world_size = self.world_size // 2
         new_group_ranks = list(range(int(new_world_size)))
         new_group = dist.new_group(ranks=new_group_ranks)
-        fsdp_osd2 = _get_fsdp_osd_2(self.world_size, fsdp_osd1, False)
-        _check_optim_state(fsdp_osd1, fsdp_osd2)
-        _check_optim_param_groups(fsdp_osd1, fsdp_osd2)
+        fsdp_osd2 = _get_fsdp_osd_2(new_world_size, self.rank, new_group_ranks,
+                                    fsdp_osd1, False)
+        if self.rank in new_group_ranks:
+            _check_optim_state(fsdp_osd1, fsdp_osd2)
+            _check_optim_param_groups(fsdp_osd1, fsdp_osd2)
