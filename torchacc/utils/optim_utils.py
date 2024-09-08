@@ -6,104 +6,87 @@ from torch.utils._pytree import tree_map_only
 import torch_xla.core.xla_model as xm
 
 
-# transform name from shard_meta_data to original optim state_dict name of each layer
-def get_layer_full_names(layer_name, param_names):
-    full_names = []
-
-    prefix = None
-    layer_name_split = layer_name.split('.')
-    if len(layer_name_split) >= 2 and layer_name_split[
-            0] == "_fsdp_wrapped_module" and layer_name_split[1] == "model":
-        prefix = ".".join(layer_name_split[1:4])
-        prefix = prefix + '.'
-
-    for name in param_names:
-        name_splits = name.split(".")
-        if name_splits[0] == '_fpw_module':
-            new_name = ".".join(name_splits[1:])
-            if prefix:
-                new_name = prefix + new_name
-            full_names.append(new_name)
-        else:
-            full_names.append(name)
-
-    return full_names
-
 def _numel(shape):
-  numel = 1
-  for d in shape:
-    numel *= d
-  return numel
+    numel = 1
+    for d in shape:
+        numel *= d
+    return numel
+
 
 def get_layer_full_info(shard_metadata, model_state_dict):
-  #TODO: add comments
-  layer_name_list = []
-  layer_size_list = []
-  layer_numel_list = []
-  # consolidate the sharded parameters
-  for name in model_state_dict.keys():
-    is_sharded = False
-    name_splits = name.split(".")
-    # TODO: check whether is it necessary
-    if name_splits[0] == 'model':
-        name = ".".join(name_splits[1:])
+    # TODO: add comments
+    layer_name_list = []
+    layer_size_list = []
+    layer_numel_list = []
+    # consolidate the sharded parameters
+    for name in model_state_dict.keys():
+        is_sharded = False
         name_splits = name.split(".")
-    for idx, sep in enumerate(name_splits):
-      if sep.startswith("_fsdp_shard"):
-        is_sharded = True
-        prefix = ".".join(name_splits[:idx])
-        suffix = ".".join(name_splits[idx:])
-        break
-    
-    #p_info = shard_metadata["shard_info"][prefix][suffix]
-    p_info = shard_metadata["shard_info"][prefix][suffix]
-    orig_name = p_info["_orig_name"]
-    orig_size = p_info["_orig_size"]
-    if is_sharded:
-      full_name = orig_name
-      if prefix != "":
-        full_name = prefix + "." + orig_name
-    else:
-      # unsharded buffers (we'll just use rank 0's state dict for buffers)
-      full_name = name
-    layer_name_list.append(full_name)
-    layer_size_list.append(orig_size)
-    layer_numel_list.append(_numel(orig_size))
-  
-  # flatten_parameters = True
-  flatten_info = shard_metadata["flatten_info"]
-  if flatten_info != {}:
-    layer_name_list_ = []
-    layer_size_list_ = []
-    layer_numel_list_ = []
-    for name in layer_name_list:
-      if "_fsdp_wrapped_module.flat_param_" in name:
-        metadata = flatten_info[name]
-        prefix = ".".join(name.split(".")[:-1])
-        param_names, param_shapes, param_numel = metadata
-        full_names = param_names
+        # TODO: check whether is it necessary to check "model"
+        if name_splits[0] == 'model':
+            name = ".".join(name_splits[1:])
+            name_splits = name.split(".")
+        for idx, sep in enumerate(name_splits):
+            if sep.startswith("_fsdp_shard"):
+                is_sharded = True
+                prefix = ".".join(name_splits[:idx])
+                suffix = ".".join(name_splits[idx:])
+                break
 
-        if prefix != "":
-          full_names = [prefix + "." + n for n in full_names]
-        
-        full_names = [fn.replace("_fsdp_wrapped_module.", "").replace("_fpw_module.", "") for fn in full_names]
+        #p_info = shard_metadata["shard_info"][prefix][suffix]
+        p_info = shard_metadata["shard_info"][prefix][suffix]
+        orig_name = p_info["_orig_name"]
+        orig_size = p_info["_orig_size"]
+        if is_sharded:
+            full_name = orig_name
+            if prefix != "":
+                full_name = prefix + "." + orig_name
+        else:
+            # unsharded buffers (we'll just use rank 0's state dict for buffers)
+            full_name = name
+        layer_name_list.append(full_name)
+        layer_size_list.append(orig_size)
+        layer_numel_list.append(_numel(orig_size))
 
-        layer_name_list_.append(full_names)
-        layer_size_list_.append(param_shapes)
-        layer_numel_list_.append(param_numel)
+    # flatten_parameters = True
+    flatten_info = shard_metadata["flatten_info"]
+    if flatten_info != {}:
+        layer_name_list_ = []
+        layer_size_list_ = []
+        layer_numel_list_ = []
+        for name in layer_name_list:
+            if "_fsdp_wrapped_module.flat_param_" in name:
+                metadata = flatten_info[name]
+                prefix = ".".join(name.split(".")[:-1])
+                param_names, param_shapes, param_numel = metadata
+                full_names = param_names
 
-    return (layer_name_list_, layer_size_list_ , layer_numel_list_)
-  
-  # return with lists
-  layer_name_list = [[fn.replace("_fsdp_wrapped_module.", "").replace("_fpw_module.", "")] for fn in layer_name_list]
-  layer_size_list = [[s] for s in layer_size_list]
-  layer_numel_list = [[n] for n in layer_numel_list]
-  
-  return (layer_name_list, layer_size_list, layer_numel_list)
+                if prefix != "":
+                    full_names = [prefix + "." + n for n in full_names]
+
+                full_names = [
+                    fn.replace("_fsdp_wrapped_module.",
+                               "").replace("_fpw_module.", "")
+                    for fn in full_names
+                ]
+
+                layer_name_list_.append(full_names)
+                layer_size_list_.append(param_shapes)
+                layer_numel_list_.append(param_numel)
+
+        return (layer_name_list_, layer_size_list_, layer_numel_list_)
+
+    # return with lists
+    layer_name_list = [[
+        fn.replace("_fsdp_wrapped_module.", "").replace("_fpw_module.", "")
+    ] for fn in layer_name_list]
+    layer_size_list = [[s] for s in layer_size_list]
+    layer_numel_list = [[n] for n in layer_numel_list]
+
+    return (layer_name_list, layer_size_list, layer_numel_list)
 
 
-def unflatten_optim_params(params, param_names, param_shapes,
-                           param_numels):
+def unflatten_optim_params(params, param_names, param_shapes, param_numels):
     if params.dim() == 0:
         full_params = [params for _ in range(len(param_names))]
     else:
@@ -147,6 +130,7 @@ def broadcast_processed_state(optim_state: dict[str, any], rank,
                 v.shape, v.dtype),  # type: ignore[union-attr]
             optim_state,
         )
+
     ordinal = xm.get_ordinal()
     new_group = []
 
@@ -154,12 +138,11 @@ def broadcast_processed_state(optim_state: dict[str, any], rank,
         if ordinal in group:
             new_group = group
             break
-    #print(objects[0])
-    #import pdb
-    #pdb.set_trace()
+
     pg_group = _setup_gloo_distributed(new_group)
     dist.broadcast_object_list(objects, src=new_group[0], group=pg_group)
     _cleanup_gloo_distributed(pg_group)
+
     if rank == 0:
         return optim_state
     else:
