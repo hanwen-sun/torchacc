@@ -29,10 +29,17 @@ def get_layer_full_names(layer_name, param_names):
 
     return full_names
 
+def _numel(shape):
+  numel = 1
+  for d in shape:
+    numel *= d
+  return numel
+
 def get_layer_full_info(shard_metadata, model_state_dict):
-  full_name_list = []
-  orig_size_list = []
-  
+  #TODO: add comments
+  layer_name_list = []
+  layer_size_list = []
+  layer_numel_list = []
   # consolidate the sharded parameters
   for name in model_state_dict.keys():
     is_sharded = False
@@ -59,19 +66,21 @@ def get_layer_full_info(shard_metadata, model_state_dict):
     else:
       # unsharded buffers (we'll just use rank 0's state dict for buffers)
       full_name = name
-    full_name_list.append(full_name)
-    orig_size_list.append(orig_size)  
+    layer_name_list.append(full_name)
+    layer_size_list.append(orig_size)
+    layer_numel_list.append(_numel(orig_size))
   
   # flatten_parameters = True
   flatten_info = shard_metadata["flatten_info"]
   if flatten_info != {}:
-    full_name_list_ = []
-    orig_size_list_ = []
-    for name in full_name_list:
+    layer_name_list_ = []
+    layer_size_list_ = []
+    layer_numel_list_ = []
+    for name in layer_name_list:
       if "_fsdp_wrapped_module.flat_param_" in name:
         metadata = flatten_info[name]
         prefix = ".".join(name.split(".")[:-1])
-        param_names, param_shapes, param_numels = metadata
+        param_names, param_shapes, param_numel = metadata
         full_names = param_names
 
         if prefix != "":
@@ -79,29 +88,31 @@ def get_layer_full_info(shard_metadata, model_state_dict):
         
         full_names = [fn.replace("_fsdp_wrapped_module.", "").replace("_fpw_module.", "") for fn in full_names]
 
-        full_name_list_.append(full_names)
-        orig_size_list_.append(param_shapes)
+        layer_name_list_.append(full_names)
+        layer_size_list_.append(param_shapes)
+        layer_numel_list_.append(param_numel)
 
-    return full_name_list_, orig_size_list_ 
+    return (layer_name_list_, layer_size_list_ , layer_numel_list_)
   
-  full_name_list = [fn.replace("_fsdp_wrapped_module.", "").replace("_fpw_module.", "") for fn in full_name_list]
+  # return with lists
+  layer_name_list = [[fn.replace("_fsdp_wrapped_module.", "").replace("_fpw_module.", "")] for fn in layer_name_list]
+  layer_size_list = [[s] for s in layer_size_list]
+  layer_numel_list = [[n] for n in layer_numel_list]
   
-  return full_name_list, orig_size_list
+  return (layer_name_list, layer_size_list, layer_numel_list)
 
 
-def unflatten_optim_params(params, layer_name, param_names, param_shapes,
+def unflatten_optim_params(params, param_names, param_shapes,
                            param_numels):
-    full_names = get_layer_full_names(layer_name, param_names)
-
     if params.dim() == 0:
-        full_params = [params for _ in range(len(full_names))]
+        full_params = [params for _ in range(len(param_names))]
     else:
         full_params = [
             t.view(s)
             for (t, s) in zip(params.split(param_numels), param_shapes)
         ]
 
-    return full_names, full_params
+    return full_params
 
 
 class _PosDimTensorInfo(NamedTuple):
@@ -143,7 +154,9 @@ def broadcast_processed_state(optim_state: dict[str, any], rank,
         if ordinal in group:
             new_group = group
             break
-
+    #print(objects[0])
+    #import pdb
+    #pdb.set_trace()
     pg_group = _setup_gloo_distributed(new_group)
     dist.broadcast_object_list(objects, src=new_group[0], group=pg_group)
     _cleanup_gloo_distributed(pg_group)
