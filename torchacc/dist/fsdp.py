@@ -264,10 +264,9 @@ class FullyShardedDataParallel(ParallelModule):
             then nonzero ranks return an :class:`dict` with keys but empty value.
         """
         # we only support FULL_STATE_DICT and flatten parameters now
-        if not self.model.flatten_parameters:
-            raise NotImplementedError(
-                "we only support flatten_parameters=True now")
-
+        #if not self.model.flatten_parameters:
+        #    raise NotImplementedError(
+        #        "we only support flatten_parameters=True now")
         shard_meta_data = self.model.get_shard_metadata()
         sharded_optim_state = optim.state_dict()['state']
         optim_state_param_groups = optim.state_dict()['param_groups']
@@ -276,6 +275,7 @@ class FullyShardedDataParallel(ParallelModule):
             'state': {},
             'param_groups': {}
         }
+        full_name_list, orig_param_list = optim_utils.get_layer_full_info(shard_meta_data, self.state_dict())
 
         # (rank0_only and self.model.rank == 0) or (not rank0_only)
         if not rank0_only or self.model.rank == 0:
@@ -420,6 +420,7 @@ class FullyShardedDataParallel(ParallelModule):
                 xm.mark_step()
 
             flat_optim_state['state'][idx] = flat_value
+        
         flat_optim_state['param_groups'][0]['params'] = [
             i for i in range(0, len(flat_optim_state['state'].keys()))
         ]

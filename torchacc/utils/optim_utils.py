@@ -29,6 +29,65 @@ def get_layer_full_names(layer_name, param_names):
 
     return full_names
 
+def get_layer_full_info(shard_metadata, model_state_dict):
+  full_name_list = []
+  orig_size_list = []
+  
+  # consolidate the sharded parameters
+  for name in model_state_dict.keys():
+    is_sharded = False
+    name_splits = name.split(".")
+    # TODO: check whether is it necessary
+    if name_splits[0] == 'model':
+        name = ".".join(name_splits[1:])
+        name_splits = name.split(".")
+    for idx, sep in enumerate(name_splits):
+      if sep.startswith("_fsdp_shard"):
+        is_sharded = True
+        prefix = ".".join(name_splits[:idx])
+        suffix = ".".join(name_splits[idx:])
+        break
+    
+    #p_info = shard_metadata["shard_info"][prefix][suffix]
+    p_info = shard_metadata["shard_info"][prefix][suffix]
+    orig_name = p_info["_orig_name"]
+    orig_size = p_info["_orig_size"]
+    if is_sharded:
+      full_name = orig_name
+      if prefix != "":
+        full_name = prefix + "." + orig_name
+    else:
+      # unsharded buffers (we'll just use rank 0's state dict for buffers)
+      full_name = name
+    full_name_list.append(full_name)
+    orig_size_list.append(orig_size)  
+  
+  # flatten_parameters = True
+  flatten_info = shard_metadata["flatten_info"]
+  if flatten_info != {}:
+    full_name_list_ = []
+    orig_size_list_ = []
+    for name in full_name_list:
+      if "_fsdp_wrapped_module.flat_param_" in name:
+        metadata = flatten_info[name]
+        prefix = ".".join(name.split(".")[:-1])
+        param_names, param_shapes, param_numels = metadata
+        full_names = param_names
+
+        if prefix != "":
+          full_names = [prefix + "." + n for n in full_names]
+        
+        full_names = [fn.replace("_fsdp_wrapped_module.", "").replace("_fpw_module.", "") for fn in full_names]
+
+        full_name_list_.append(full_names)
+        orig_size_list_.append(param_shapes)
+
+    return full_name_list_, orig_size_list_ 
+  
+  full_name_list = [fn.replace("_fsdp_wrapped_module.", "").replace("_fpw_module.", "") for fn in full_name_list]
+  
+  return full_name_list, orig_size_list
+
 
 def unflatten_optim_params(params, layer_name, param_names, param_shapes,
                            param_numels):
