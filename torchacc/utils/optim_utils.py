@@ -2,7 +2,6 @@ import torch
 import torch.distributed as dist
 from typing import NamedTuple, Optional
 from torch.utils._pytree import tree_map_only
-
 import torch_xla.core.xla_model as xm
 
 
@@ -14,15 +13,38 @@ def _numel(shape):
 
 
 def get_layer_full_info(shard_metadata, model_state_dict):
-    # TODO: add comments
+    """
+    Get full name, shape and numel info of unflatten and unshard optimizer's state_dict according 
+    to shard_metadata and model's state_dict;
+    Args:
+        shard_metadata (dict):
+            ``model.get_shard_metadata()`` from an FSDP model of any rank
+        model_state_dict(dict):
+            The state_dict from an FSDP model.
+
+    Returns:
+        For all ranks, we get the same shard_metadata and model_state_dict, so the return value is
+        same.
+        layer_name_list: 2-dimension list, contains the full name information.
+        if parameters if flattened, each layer may have mutiple names.
+        layer_size_list: 2-dimension list, contains the unflatten and unshard shape information of 
+        each layer.
+        layer_numel_list: 2-dimension list, contains the unflatten and unshard numel information of 
+        each layer. 
+    """
     layer_name_list = []
     layer_size_list = []
     layer_numel_list = []
+    buffer_info = shard_metadata.get("buffer_info", {})
+
     # consolidate the sharded parameters
-    for name in model_state_dict.keys():
+    for name, param in model_state_dict.items():
+        if name in buffer_info:  # cast buffer back to its original dtype
+            p = p.to(buffer_info[name]["_orig_dtype"])
+
         is_sharded = False
         name_splits = name.split(".")
-        # TODO: check whether is it necessary to check "model"
+        # if start with 'model', we just skip the 'model'
         if name_splits[0] == 'model':
             name = ".".join(name_splits[1:])
             name_splits = name.split(".")
@@ -33,20 +55,22 @@ def get_layer_full_info(shard_metadata, model_state_dict):
                 suffix = ".".join(name_splits[idx:])
                 break
 
-        #p_info = shard_metadata["shard_info"][prefix][suffix]
-        p_info = shard_metadata["shard_info"][prefix][suffix]
-        orig_name = p_info["_orig_name"]
-        orig_size = p_info["_orig_size"]
         if is_sharded:
+            p_info = shard_metadata["shard_info"][prefix][suffix]
+            orig_name = p_info["_orig_name"]
+            orig_size = p_info["_orig_size"]
             full_name = orig_name
             if prefix != "":
                 full_name = prefix + "." + orig_name
+            layer_name_list.append(full_name)
+            layer_size_list.append(orig_size)
+            layer_numel_list.append(_numel(orig_size))
+
         else:
-            # unsharded buffers (we'll just use rank 0's state dict for buffers)
-            full_name = name
-        layer_name_list.append(full_name)
-        layer_size_list.append(orig_size)
-        layer_numel_list.append(_numel(orig_size))
+            # unsharded buffers, we don't need the info in shard_metadata
+            layer_name_list.append(name)
+            layer_size_list.append(param.shape)
+            layer_numel_list.append(_numel(param.shape))
 
     # flatten_parameters = True
     flatten_info = shard_metadata["flatten_info"]
@@ -140,7 +164,8 @@ def broadcast_processed_state(optim_state: dict[str, any], rank,
             break
 
     pg_group = _setup_gloo_distributed(new_group)
-    dist.broadcast_object_list(objects, src=new_group[0], group=pg_group)
+    dist.broadcast_object_list(
+        objects, src=dist.get_global_rank(pg_group, 0), group=pg_group)
     _cleanup_gloo_distributed(pg_group)
 
     if rank == 0:
@@ -149,9 +174,9 @@ def broadcast_processed_state(optim_state: dict[str, any], rank,
         return objects[0]
 
 
-def broadcast_state(state_params, model):
-    device = model.xla_device
-    if model.rank == 0 and isinstance(state_params, torch.Tensor):
+def broadcast_state(state_params, device, rank, sharding_groups,
+                    collective_broadcast_op):
+    if rank == 0 and isinstance(state_params, torch.Tensor):
         tensor_buffer = state_params.to(device)
     else:
         tensor_buffer = torch.zeros(
@@ -159,21 +184,20 @@ def broadcast_state(state_params, model):
 
     # Since broadcast employs all-reduce, here we only need to ensure that root_ordinal
     # is different from xm.get_ordinal() on the non-root nodes
-    root_ordinal = xm.get_ordinal() if model.rank == 0 else -1
+    root_ordinal = xm.get_ordinal() if rank == 0 else -1
 
-    model.collective_broadcast_op([tensor_buffer],
-                                  root_ordinal=root_ordinal,
-                                  groups=model.sharding_groups)
+    collective_broadcast_op([tensor_buffer],
+                            root_ordinal=root_ordinal,
+                            groups=sharding_groups)
 
     return tensor_buffer
 
 
-def all_gather_state(state_params, model):
+def all_gather_state(state_params, sharding_groups, all_gather_op):
     if state_params.dim() == 0:
         return state_params
 
-    tensor_buffer = model.all_gather_op(
-        state_params, groups=model.sharding_groups)
+    tensor_buffer = all_gather_op(state_params, groups=sharding_groups)
 
     return tensor_buffer
 

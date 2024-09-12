@@ -8,8 +8,8 @@ import torch
 import torch.fx as fx
 from torch.fx.passes.split_module import split_module
 import torch_xla.distributed.fsdp as xla_fsdp
-import torch_xla.core.xla_model as xm
 
+import torchacc as ta
 from torchacc.config import Config
 from torchacc.dist import ParallelModule
 import torchacc.utils.checkpoint as checkpoint
@@ -281,8 +281,8 @@ class FullyShardedDataParallel(ParallelModule):
         ]
         # (rank0_only and self.model.rank == 0) or (not rank0_only)
         if not rank0_only or self.model.rank == 0:
-            consolidate_optim_state_dict[
-                'param_groups'] = optim_state_param_groups
+            consolidate_optim_state_dict['param_groups'] = copy.deepcopy(
+                optim_state_param_groups)
             consolidate_optim_state_dict['param_groups'][0]['params'].clear()
             for fn in flatten_name_list:
                 consolidate_optim_state_dict['param_groups'][0][
@@ -296,18 +296,19 @@ class FullyShardedDataParallel(ParallelModule):
             layer_numels = layer_numel_lists[idx]
             for state_name, state_params in layer_state.items():
                 tensor_buffer = optim_utils.all_gather_state(
-                    state_params, self.model)
+                    state_params, self.model.sharding_groups,
+                    self.model.all_gather_op)
                 orig_params = optim_utils.unflatten_optim_params(
                     tensor_buffer, layer_names, layer_shapes, layer_numels)
 
                 if not rank0_only or self.model.rank == 0:
                     for fn, fp in zip(layer_names, orig_params):
                         if cpu_offload:
-                            xm.mark_step()
+                            ta.mark_step()
                             unflat_state_dict[fn][state_name] = fp.cpu()
                         else:
                             unflat_state_dict[fn][state_name] = fp
-                xm.mark_step()
+                ta.mark_step()
         consolidate_optim_state_dict['state'] = unflat_state_dict
 
         return consolidate_optim_state_dict
@@ -318,22 +319,29 @@ class FullyShardedDataParallel(ParallelModule):
         """
         Convert an optimizer state-dict so that it can be loaded into the
         optimizer associated with the FSDP model.
-        We judge whether the optim_state_dict is sharded automatically
+        We check whether the optim_state_dict is sharded automatically
                 
         Args:
             optim_state_dict (Dict[str, Any]): The optimizer states to be loaded.
             rank0_only: (bool): control whether load state_dict only from
-                rank0 at the begining.(Default: ``True``)
+                rank0 at the begining.(Default: ``True``) If set to True,
+                then nonzero ranks load an :class:`dict` with keys but empty value.
         
         Returns:
             Dict[str, Any]: A :class:`dict` containing the optimizer state for
             self.model which is sharded.
         """
+        shard_meta_data = self.model.get_shard_metadata()
+
         # for sharded optim_state, we return directly
         if 'shard_metadata' in optim_state_dict.keys():
+            if shard_meta_data['world_size'] != optim_state_dict[
+                    'shard_metadata']['world_size']:
+                raise NotImplementedError(
+                    f"the sharded_optim_state_dict is loaded with world_size: {shard_meta_data['world_size']} but stored with: {optim_state_dict['shard_metadata']['world_size']}!"
+                )
             return optim_state_dict['optimizer']
 
-        shard_meta_data = self.model.get_shard_metadata()
         unflat_optim_state = optim_state_dict
         flat_optim_state: Dict[str, Any] = {'state': {}, 'param_groups': {}}
 
@@ -365,7 +373,9 @@ class FullyShardedDataParallel(ParallelModule):
                     tensor_buffer = unflat_state[name][state_name]
                     if rank0_only:
                         tensor_buffer = optim_utils.broadcast_state(
-                            state_params, self.model)
+                            state_params, self.model.xla_device,
+                            self.model.rank, self.model.sharding_groups,
+                            self.model.collective_broadcast_op)
                     tensor_buffer_list.append(tensor_buffer)
 
                 flat_tensor = optim_utils.flatten_optim_state(
@@ -373,7 +383,7 @@ class FullyShardedDataParallel(ParallelModule):
 
                 if len(flat_tensor):
                     flat_value[state_name] = self.model._get_shard(flat_tensor)
-                xm.mark_step()
+                ta.mark_step()
 
             flat_optim_state['state'][idx] = flat_value
 

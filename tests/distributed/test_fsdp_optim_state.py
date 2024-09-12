@@ -176,7 +176,6 @@ class FSDPOptimStateTest(MultiProcessTestBase):
         assert self.world_size % 2 == 0
         new_world_size = self.world_size // 2
         new_group_ranks = list(range(int(new_world_size)))
-        new_group = dist.new_group(ranks=new_group_ranks)
         fsdp_osd2 = _get_fsdp_osd_2(new_world_size, self.rank, new_group_ranks,
                                     fsdp_osd1)
 
@@ -208,7 +207,6 @@ class FSDPOptimStateTest(MultiProcessTestBase):
         assert self.world_size % 2 == 0
         new_world_size = self.world_size // 2
         new_group_ranks = list(range(int(new_world_size)))
-        new_group = dist.new_group(ranks=new_group_ranks)
         fsdp_osd2 = _get_fsdp_osd_2(
             new_world_size,
             self.rank,
@@ -244,7 +242,6 @@ class FSDPOptimStateTest(MultiProcessTestBase):
         assert self.world_size % 2 == 0
         new_world_size = self.world_size // 2
         new_group_ranks = list(range(int(new_world_size)))
-        new_group = dist.new_group(ranks=new_group_ranks)
         fsdp_osd2 = _get_fsdp_osd_2(
             new_world_size,
             self.rank,
