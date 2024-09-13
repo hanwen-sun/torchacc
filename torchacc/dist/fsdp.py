@@ -298,6 +298,9 @@ class FullyShardedDataParallel(ParallelModule):
                 tensor_buffer = optim_utils.all_gather_state(
                     state_params, self.model.sharding_groups,
                     self.model.all_gather_op)
+                tensor_buffer = optim_utils.unpad(
+                    tensor_buffer, layer_numels,
+                    self.model.world_size * self.model._shard_size_multiple)
                 orig_params = optim_utils.unflatten_optim_params(
                     tensor_buffer, layer_names, layer_shapes, layer_numels)
 

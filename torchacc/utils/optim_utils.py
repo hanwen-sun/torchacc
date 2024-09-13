@@ -110,6 +110,18 @@ def get_layer_full_info(shard_metadata, model_state_dict):
     return (layer_name_list, layer_size_list, layer_numel_list)
 
 
+def unpad(tensor_buffer, layer_numels, world_size):
+    if tensor_buffer.dim() == 0:
+        return tensor_buffer
+    numel = 0
+    for layer_numel in layer_numels:
+        numel += layer_numel
+    if numel % world_size != 0:
+        pad_size = world_size - numel % world_size
+        tensor_buffer = tensor_buffer[:-pad_size]
+    return tensor_buffer
+
+
 def unflatten_optim_params(params, param_names, param_shapes, param_numels):
     if params.dim() == 0:
         full_params = [params for _ in range(len(param_names))]
