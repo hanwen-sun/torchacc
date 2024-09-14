@@ -207,29 +207,33 @@ class FullyShardedDataParallel(ParallelModule):
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)
 
+    @staticmethod
     def sharded_optim_state_dict(
-        self,
+        model: torch.nn.Module,
         optim: torch.optim.Optimizer,
     ):
         """
         Return the optimizer state-dict in its sharded form.
         
         Args:
-            optim (torch.optim.Optimizer): Optimizer for self.model's
+            model (torch.nn.Module): FSDP model whose parameters were 
+            passed into the optimizer ``optim``.
+            optim (torch.optim.Optimizer): Optimizer for model's
                 parameters.
 
         Returns:
             Dict[str, Any]: A :class:`dict` containing the optimizer state for
-            self.model. Each rank get the sharded optim state added with shard_metadata.
+            fsdp model. Each rank get the sharded optim state added with shard_metadata.
         """
         optimizer = {
             "optimizer": optim.state_dict(),
-            "shard_metadata": self.model.get_shard_metadata(),
+            "shard_metadata": model.model.get_shard_metadata(),
         }
 
         return optimizer
 
-    def full_optim_state_dict(self,
+    @staticmethod
+    def full_optim_state_dict(model: torch.nn.Module,
                               optim: torch.optim.Optimizer,
                               rank0_only: bool = True,
                               cpu_offload: bool = True) -> Dict[str, Any]:
@@ -239,7 +243,7 @@ class FullyShardedDataParallel(ParallelModule):
         as a :class:`dict` following the convention of
         :meth:`torch.optim.Optimizer.state_dict`, i.e. with keys ``"state"``
         and ``"param_groups"``. The flattened parameters in ``FSDP`` modules
-        contained in self.model are mapped back to their unflattened parameters.
+        contained in model are mapped back to their unflattened parameters.
 
         .. warning:: This needs to be called on all ranks since it uses
             collective communications. However, if ``rank0_only=True``, then
@@ -247,7 +251,9 @@ class FullyShardedDataParallel(ParallelModule):
             return an empty :class:`dict`.
 
         Args:
-            optim (torch.optim.Optimizer): Optimizer for self.model 's
+            model (torch.nn.Module): FSDP model whose parameters were 
+            passed into the optimizer ``optim``.
+            optim (torch.optim.Optimizer): Optimizer for model 's
                 parameters.
             rank0_only (bool): If ``True``, return the populated :class:`dict`
                 only on rank 0; if ``False``, return it on all ranks. (Default:
@@ -262,7 +268,7 @@ class FullyShardedDataParallel(ParallelModule):
             :meth:`torch.optim.Optimizer.state_dict`. If ``rank0_only=True``,
             then nonzero ranks return an :class:`dict` with keys but empty value.
         """
-        shard_meta_data = self.model.get_shard_metadata()
+        shard_meta_data = model.model.get_shard_metadata()
         sharded_optim_state = optim.state_dict()['state']
         optim_state_param_groups = optim.state_dict()['param_groups']
         # unflattened and consolidated state_dict
@@ -273,14 +279,14 @@ class FullyShardedDataParallel(ParallelModule):
 
         # param_names(2-dim list), param_shapes(2-dim list), param_numel(2-dim list)
         layer_name_lists, layer_size_lists, layer_numel_lists = optim_utils.get_layer_full_info(
-            shard_meta_data, self.state_dict())
+            shard_meta_data, model.state_dict())
 
         # transform 2-dim list name to 1-dim list name
         flatten_name_list = [
             fn for layer_fn in layer_name_lists for fn in layer_fn
         ]
         # (rank0_only and self.model.rank == 0) or (not rank0_only)
-        if not rank0_only or self.model.rank == 0:
+        if not rank0_only or model.model.rank == 0:
             consolidate_optim_state_dict['param_groups'] = copy.deepcopy(
                 optim_state_param_groups)
             consolidate_optim_state_dict['param_groups'][0]['params'].clear()
@@ -296,18 +302,18 @@ class FullyShardedDataParallel(ParallelModule):
             layer_numels = layer_numel_lists[idx]
             for state_name, state_params in layer_state.items():
                 tensor_buffer = optim_utils.all_gather_state(
-                    state_params, self.model.sharding_groups,
-                    self.model.all_gather_op)
+                    state_params, model.model.sharding_groups,
+                    model.model.all_gather_op)
                 tensor_buffer = optim_utils.unpad(
                     tensor_buffer, layer_numels,
-                    self.model.world_size * self.model._shard_size_multiple)
+                    model.model.world_size * model.model._shard_size_multiple)
                 orig_params = optim_utils.unflatten_optim_params(
                     tensor_buffer, layer_names, layer_shapes, layer_numels)
 
-                if not rank0_only or self.model.rank == 0:
+                if not rank0_only or model.model.rank == 0:
                     for fn, fp in zip(layer_names, orig_params):
                         if cpu_offload:
-                            ta.mark_step()
+                            ta.mark_step()  # tensor evaluation
                             unflat_state_dict[fn][state_name] = fp.cpu()
                         else:
                             unflat_state_dict[fn][state_name] = fp
@@ -316,15 +322,18 @@ class FullyShardedDataParallel(ParallelModule):
 
         return consolidate_optim_state_dict
 
-    def load_optim_state_dict(self,
+    @staticmethod
+    def load_optim_state_dict(model: torch.nn.Module,
                               optim_state_dict: Dict[str, Any],
                               rank0_only: bool = True) -> Dict[str, Any]:
         """
         Convert an optimizer state-dict so that it can be loaded into the
         optimizer associated with the FSDP model.
-        We check whether the optim_state_dict is sharded automatically
+        We check whether the optim_state_dict is sharded automatically.
                 
         Args:
+            model (torch.nn.Module): FSDP model whose parameters were 
+            passed into the optimizer whose state_dict is ``optim_state_dict``.
             optim_state_dict (Dict[str, Any]): The optimizer states to be loaded.
             rank0_only: (bool): control whether load state_dict only from
                 rank0 at the begining.(Default: ``True``) If set to True,
@@ -332,9 +341,9 @@ class FullyShardedDataParallel(ParallelModule):
         
         Returns:
             Dict[str, Any]: A :class:`dict` containing the optimizer state for
-            self.model which is sharded.
+            model which is sharded.
         """
-        shard_meta_data = self.model.get_shard_metadata()
+        shard_meta_data = model.model.get_shard_metadata()
 
         # for sharded optim_state, we return directly
         if 'shard_metadata' in optim_state_dict.keys():
@@ -349,16 +358,17 @@ class FullyShardedDataParallel(ParallelModule):
         flat_optim_state: Dict[str, Any] = {'state': {}, 'param_groups': {}}
 
         layer_name_lists, layer_size_lists, layer_numel_lists = optim_utils.get_layer_full_info(
-            shard_meta_data, self.state_dict())
+            shard_meta_data, model.state_dict())
 
         if rank0_only:
             unflat_optim_state = optim_utils.broadcast_processed_state(
-                unflat_optim_state, self.model.rank, self.model.sharding_groups)
+                unflat_optim_state, model.model.rank,
+                model.model.sharding_groups)
         unflat_state = unflat_optim_state['state']
 
         flat_optim_state['param_groups'] = copy.deepcopy(
             unflat_optim_state['param_groups'])
-        # flatten and sharded state_dict
+
         for idx, layer_names in enumerate(layer_name_lists):
             flat_value: Dict[str, Any] = {}
             # broadcast tensor to other ranks per layer per state
@@ -376,16 +386,16 @@ class FullyShardedDataParallel(ParallelModule):
                     tensor_buffer = unflat_state[name][state_name]
                     if rank0_only:
                         tensor_buffer = optim_utils.broadcast_state(
-                            state_params, self.model.xla_device,
-                            self.model.rank, self.model.sharding_groups,
-                            self.model.collective_broadcast_op)
+                            state_params, model.model.xla_device,
+                            model.model.rank, model.model.sharding_groups,
+                            model.model.collective_broadcast_op)
                     tensor_buffer_list.append(tensor_buffer)
 
                 flat_tensor = optim_utils.flatten_optim_state(
                     tensor_buffer_list)
 
                 if len(flat_tensor):
-                    flat_value[state_name] = self.model._get_shard(flat_tensor)
+                    flat_value[state_name] = model.model._get_shard(flat_tensor)
                 ta.mark_step()
 
             flat_optim_state['state'][idx] = flat_value

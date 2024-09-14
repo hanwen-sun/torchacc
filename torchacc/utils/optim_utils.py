@@ -1,6 +1,6 @@
 import torch
 import torch.distributed as dist
-from typing import NamedTuple, Optional
+from typing import Any, Dict, NamedTuple, Optional
 from torch.utils._pytree import tree_map_only
 import torch_xla.core.xla_model as xm
 
@@ -23,13 +23,13 @@ def get_layer_full_info(shard_metadata, model_state_dict):
             The state_dict from an FSDP model.
 
     Returns:
-        For all ranks, we get the same shard_metadata and model_state_dict, so the return value is
-        same.
-        layer_name_list: 2-dimension list, contains the full name information.
-        if parameters if flattened, each layer may have mutiple names.
-        layer_size_list: 2-dimension list, contains the unflatten and unshard shape information of 
+        For all ranks, we get the same shard_metadata and model_state_dict, and the return value is
+        same:
+        layer_name_list(list): 2-dimension list([[layer_name_group1], [layer_name_group2], ...]), contains the full name information.
+        if parameters if flatten, each layer may have mutiple orig name and parameter.
+        layer_size_list(list): 2-dimension list([[layer_size_group1], [layer_size_group2], ...]), contains the unflatten and unshard shape information of 
         each layer.
-        layer_numel_list: 2-dimension list, contains the unflatten and unshard numel information of 
+        layer_numel_list(list): 2-dimension list([[layer_numel_group1], [layer_numel_group2], ...]), contains the unflatten and unshard numel information of 
         each layer. 
     """
     layer_name_list = []
@@ -156,7 +156,7 @@ def _cleanup_gloo_distributed(pg):
     dist.destroy_process_group(pg)
 
 
-def broadcast_processed_state(optim_state: dict[str, any], rank,
+def broadcast_processed_state(optim_state: dict[str, Any], rank,
                               sharding_groups):
     objects: list[Any] = [None]
     if rank == 0:
@@ -170,12 +170,14 @@ def broadcast_processed_state(optim_state: dict[str, any], rank,
     ordinal = xm.get_ordinal()
     new_group = []
 
+    # broadcast within each sharding_group
     for group in sharding_groups:
         if ordinal in group:
             new_group = group
             break
 
     pg_group = _setup_gloo_distributed(new_group)
+    # the src is the global rank of each sharding group's rank0
     dist.broadcast_object_list(
         objects, src=dist.get_global_rank(pg_group, 0), group=pg_group)
     _cleanup_gloo_distributed(pg_group)
