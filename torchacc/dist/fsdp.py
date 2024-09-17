@@ -216,7 +216,7 @@ class FullyShardedDataParallel(ParallelModule):
         Return the optimizer state-dict in its sharded form.
         
         Args:
-            model (torch.nn.Module): FSDP model whose parameters were 
+            model (torch.nn.Module): FSDP model(torchacc or xla) whose parameters were 
             passed into the optimizer ``optim``.
             optim (torch.optim.Optimizer): Optimizer for model's
                 parameters.
@@ -225,9 +225,12 @@ class FullyShardedDataParallel(ParallelModule):
             Dict[str, Any]: A :class:`dict` containing the optimizer state for
             fsdp model. Each rank get the sharded optim state added with shard_metadata.
         """
+        if not isinstance(model, xla_fsdp.XlaFullyShardedDataParallel):
+            model = model.model
+
         optimizer = {
             "optimizer": optim.state_dict(),
-            "shard_metadata": model.model.get_shard_metadata(),
+            "shard_metadata": model.get_shard_metadata(),
         }
 
         return optimizer
@@ -251,7 +254,7 @@ class FullyShardedDataParallel(ParallelModule):
             return an empty :class:`dict`.
 
         Args:
-            model (torch.nn.Module): FSDP model whose parameters were 
+            model (torch.nn.Module): FSDP model(torchacc or xla) whose parameters were 
             passed into the optimizer ``optim``.
             optim (torch.optim.Optimizer): Optimizer for model 's
                 parameters.
@@ -268,7 +271,10 @@ class FullyShardedDataParallel(ParallelModule):
             :meth:`torch.optim.Optimizer.state_dict`. If ``rank0_only=True``,
             then nonzero ranks return an :class:`dict` with keys but empty value.
         """
-        shard_meta_data = model.model.get_shard_metadata()
+        if not isinstance(model, xla_fsdp.XlaFullyShardedDataParallel):
+            model = model.model
+
+        shard_meta_data = model.get_shard_metadata()
         sharded_optim_state = optim.state_dict()['state']
         optim_state_param_groups = optim.state_dict()['param_groups']
         # unflattened and consolidated state_dict
@@ -286,7 +292,7 @@ class FullyShardedDataParallel(ParallelModule):
             fn for layer_fn in layer_name_lists for fn in layer_fn
         ]
         # (rank0_only and self.model.rank == 0) or (not rank0_only)
-        if not rank0_only or model.model.rank == 0:
+        if not rank0_only or model.rank == 0:
             consolidate_optim_state_dict['param_groups'] = copy.deepcopy(
                 optim_state_param_groups)
             consolidate_optim_state_dict['param_groups'][0]['params'].clear()
@@ -302,15 +308,14 @@ class FullyShardedDataParallel(ParallelModule):
             layer_numels = layer_numel_lists[idx]
             for state_name, state_params in layer_state.items():
                 tensor_buffer = optim_utils.all_gather_state(
-                    state_params, model.model.sharding_groups,
-                    model.model.all_gather_op)
+                    state_params, model.sharding_groups, model.all_gather_op)
                 tensor_buffer = optim_utils.unpad(
                     tensor_buffer, layer_numels,
-                    model.model.world_size * model.model._shard_size_multiple)
+                    model.world_size * model._shard_size_multiple)
                 orig_params = optim_utils.unflatten_optim_params(
                     tensor_buffer, layer_names, layer_shapes, layer_numels)
 
-                if not rank0_only or model.model.rank == 0:
+                if not rank0_only or model.rank == 0:
                     for fn, fp in zip(layer_names, orig_params):
                         if cpu_offload:
                             ta.mark_step()  # tensor evaluation
@@ -332,26 +337,44 @@ class FullyShardedDataParallel(ParallelModule):
         We check whether the optim_state_dict is sharded automatically.
                 
         Args:
-            model (torch.nn.Module): FSDP model whose parameters were 
+            model (torch.nn.Module): FSDP model(torchacc or xla) whose parameters were 
             passed into the optimizer whose state_dict is ``optim_state_dict``.
             optim_state_dict (Dict[str, Any]): The optimizer states to be loaded.
             rank0_only: (bool): control whether load state_dict only from
                 rank0 at the begining.(Default: ``True``) If set to True,
-                then nonzero ranks load an :class:`dict` with keys but empty value.
+                the info of rank 0's optim_state_dict will broadcast to nonzero ranks,
+                so it's no matter what the optim_state_dict nonzero ranks pass in.
         
         Returns:
             Dict[str, Any]: A :class:`dict` containing the optimizer state for
             model which is sharded.
         """
-        shard_meta_data = model.model.get_shard_metadata()
+        if not isinstance(model, xla_fsdp.XlaFullyShardedDataParallel):
+            model = model.model
+
+        shard_meta_data = model.get_shard_metadata()
 
         # for sharded optim_state, we return directly
         if 'shard_metadata' in optim_state_dict.keys():
+            if optim_state_dict is None:
+                raise ValueError('optim_state_dict cannot be None')
+            assert optim_state_dict is not None
+
+            if rank0_only is True:
+                raise NotImplementedError(
+                    "we only support rank0_only = False for loading shard optim_state_dict."
+                )
+            assert rank0_only is False
+
+            # the world size should not change
             if shard_meta_data['world_size'] != optim_state_dict[
                     'shard_metadata']['world_size']:
                 raise NotImplementedError(
-                    f"the sharded_optim_state_dict is loaded with world_size: {shard_meta_data['world_size']} but stored with: {optim_state_dict['shard_metadata']['world_size']}!"
-                )
+                    "the sharded_optim_state_dict is loaded with world_size: "
+                    f"{shard_meta_data['world_size']} but stored with: "
+                    f"{optim_state_dict['shard_metadata']['world_size']}!")
+                assert shard_meta_data['world_size'] == optim_state_dict[
+                    'shard_metadata']['world_size']
             return optim_state_dict['optimizer']
 
         unflat_optim_state = optim_state_dict
@@ -362,8 +385,7 @@ class FullyShardedDataParallel(ParallelModule):
 
         if rank0_only:
             unflat_optim_state = optim_utils.broadcast_processed_state(
-                unflat_optim_state, model.model.rank,
-                model.model.sharding_groups)
+                unflat_optim_state, model.rank, model.sharding_groups)
         unflat_state = unflat_optim_state['state']
 
         flat_optim_state['param_groups'] = copy.deepcopy(
@@ -386,16 +408,16 @@ class FullyShardedDataParallel(ParallelModule):
                     tensor_buffer = unflat_state[name][state_name]
                     if rank0_only:
                         tensor_buffer = optim_utils.broadcast_state(
-                            state_params, model.model.xla_device,
-                            model.model.rank, model.model.sharding_groups,
-                            model.model.collective_broadcast_op)
+                            state_params, model.xla_device, model.rank,
+                            model.sharding_groups,
+                            model.collective_broadcast_op)
                     tensor_buffer_list.append(tensor_buffer)
 
                 flat_tensor = optim_utils.flatten_optim_state(
                     tensor_buffer_list)
 
                 if len(flat_tensor):
-                    flat_value[state_name] = model.model._get_shard(flat_tensor)
+                    flat_value[state_name] = model._get_shard(flat_tensor)
                 ta.mark_step()
 
             flat_optim_state['state'][idx] = flat_value
