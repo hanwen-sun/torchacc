@@ -148,6 +148,8 @@ class _PosDimTensorInfo(NamedTuple):
 
 
 def _setup_gloo_distributed(group):
+    if not torch.distributed.is_initialized():
+        dist.init_process_group()
     pg = dist.new_group(ranks=group, backend="gloo")
     return pg
 
@@ -168,13 +170,17 @@ def broadcast_processed_state(optim_state: dict[str, Any], rank,
         )
 
     ordinal = xm.get_ordinal()
-    new_group = []
+    world_size = xm.xrt_world_size()
+    # global group
+    new_group = list(range(int(world_size)))
 
-    # broadcast within each sharding_group
-    for group in sharding_groups:
-        if ordinal in group:
-            new_group = group
-            break
+    # sharding_groups may be None if we use xla fsdp directly
+    if sharding_groups is not None:
+        # broadcast within each sharding_group
+        for group in sharding_groups:
+            if ordinal in group:
+                new_group = group
+                break
 
     pg_group = _setup_gloo_distributed(new_group)
     # the src is the global rank of each sharding group's rank0

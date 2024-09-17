@@ -335,6 +335,7 @@ class FullyShardedDataParallel(ParallelModule):
         Convert an optimizer state-dict so that it can be loaded into the
         optimizer associated with the FSDP model.
         We check whether the optim_state_dict is sharded automatically.
+        For shard optim_state_dict, we must set rank0_only to false.
                 
         Args:
             model (torch.nn.Module): FSDP model(torchacc or xla) whose parameters were 
@@ -342,7 +343,7 @@ class FullyShardedDataParallel(ParallelModule):
             optim_state_dict (Dict[str, Any]): The optimizer states to be loaded.
             rank0_only: (bool): control whether load state_dict only from
                 rank0 at the begining.(Default: ``True``) If set to True,
-                the info of rank 0's optim_state_dict will broadcast to nonzero ranks,
+                the info of rank0's optim_state_dict will broadcast to nonzero ranks,
                 so it's no matter what the optim_state_dict nonzero ranks pass in.
         
         Returns:
@@ -354,12 +355,14 @@ class FullyShardedDataParallel(ParallelModule):
 
         shard_meta_data = model.get_shard_metadata()
 
-        # for sharded optim_state, we return directly
-        if 'shard_metadata' in optim_state_dict.keys():
-            if optim_state_dict is None:
+        if optim_state_dict is None:
+            if not rank0_only or model.rank == 0:
                 raise ValueError('optim_state_dict cannot be None')
-            assert optim_state_dict is not None
+                assert optim_state_dict is not None
 
+        # for shard optim_state_dict, we return directly
+        if optim_state_dict is not None and 'shard_metadata' in optim_state_dict.keys(
+        ):
             if rank0_only is True:
                 raise NotImplementedError(
                     "we only support rank0_only = False for loading shard optim_state_dict."
