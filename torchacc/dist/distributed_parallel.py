@@ -101,4 +101,4 @@ class DistributedParallel(ParallelModule):
                 "load_optim_state_dict is only support for FullyShardedDataParallel"
             )
         assert isinstance(self.model, FullyShardedDataParallel)
-        return self.model.load_optim_state_dict(self.model, optim)
+        return self.model.load_optim_state_dict(self.model, optim_state_dict)
