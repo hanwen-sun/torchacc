@@ -44,10 +44,16 @@ def get_layer_full_info(shard_metadata, model_state_dict):
 
         is_sharded = False
         name_splits = name.split(".")
-        # if start with 'model', we just skip the 'model'
-        if name_splits[0] == 'model':
-            name = ".".join(name_splits[1:])
-            name_splits = name.split(".")
+        model_num = 0
+        # if start with 'model', we just skip the model
+        for name in name_splits:
+            if name != 'model':
+                break
+            else:
+                n = n + 1
+        name_splits = name_splits[n:]
+        name = ".".join(name_splits)
+
         for idx, sep in enumerate(name_splits):
             if sep.startswith("_fsdp_shard"):
                 is_sharded = True
