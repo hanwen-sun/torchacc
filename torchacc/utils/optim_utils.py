@@ -50,8 +50,8 @@ def get_layer_full_info(shard_metadata, model_state_dict):
             if name != 'model':
                 break
             else:
-                n = n + 1
-        name_splits = name_splits[n:]
+                model_num = model_num + 1
+        name_splits = name_splits[model_num:]
         name = ".".join(name_splits)
 
         for idx, sep in enumerate(name_splits):
