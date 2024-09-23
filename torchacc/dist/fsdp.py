@@ -358,7 +358,7 @@ class FullyShardedDataParallel(ParallelModule):
         if optim_state_dict is None:
             if not rank0_only or model.rank == 0:
                 raise ValueError('optim_state_dict cannot be None')
-                assert optim_state_dict is not None
+            assert rank0_only and model.rank != 0
 
         # for shard optim_state_dict, we return directly
         if optim_state_dict is not None and 'shard_metadata' in optim_state_dict.keys(
@@ -376,8 +376,8 @@ class FullyShardedDataParallel(ParallelModule):
                     "the sharded_optim_state_dict is loaded with world_size: "
                     f"{shard_meta_data['world_size']} but stored with: "
                     f"{optim_state_dict['shard_metadata']['world_size']}!")
-                assert shard_meta_data['world_size'] == optim_state_dict[
-                    'shard_metadata']['world_size']
+            assert shard_meta_data['world_size'] == optim_state_dict[
+                'shard_metadata']['world_size']
             return optim_state_dict['optimizer']
 
         unflat_optim_state = optim_state_dict
