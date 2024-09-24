@@ -37,7 +37,7 @@ def _init_model(size, config: Config):
     return model, optim
 
 
-def _train_step(model: torch.nn.Module,
+def _train(model: torch.nn.Module,
                 optim: torch.optim.Optimizer,
                 model_size: int = 1024,
                 num_iters: int = 1):
