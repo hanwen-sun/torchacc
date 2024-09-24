@@ -289,7 +289,7 @@ class FullyShardedDataParallel(ParallelModule):
                           xla_fsdp.XlaFullyShardedDataParallel) or isinstance(
                               model, FullyShardedDataParallel)
 
-        if isinstance(model, xla_fsdp.XlaFullyShardedDataParallel):
+        if isinstance(model, FullyShardedDataParallel):
             model = model.model
 
         shard_meta_data = model.get_shard_metadata()
