@@ -225,7 +225,16 @@ class FullyShardedDataParallel(ParallelModule):
             Dict[str, Any]: A :class:`dict` containing the optimizer state for
             fsdp model. Each rank get the sharded optim state added with shard_metadata.
         """
-        if not isinstance(model, xla_fsdp.XlaFullyShardedDataParallel):
+        if not isinstance(
+                model, xla_fsdp.XlaFullyShardedDataParallel) and not isinstance(
+                    model, FullyShardedDataParallel):
+            raise NotImplementedError(
+                "The model must be torchacc or xla FSDP model")
+        assert isinstance(model,
+                          xla_fsdp.XlaFullyShardedDataParallel) or isinstance(
+                              model, FullyShardedDataParallel)
+
+        if isinstance(model, FullyShardedDataParallel):
             model = model.model
 
         optimizer = {
@@ -271,11 +280,16 @@ class FullyShardedDataParallel(ParallelModule):
             :meth:`torch.optim.Optimizer.state_dict`. If ``rank0_only=True``,
             then nonzero ranks return an :class:`dict` with keys but empty value.
         """
-        if not isinstance(model, xla_fsdp.XlaFullyShardedDataParallel):
-            if not hasattr(model, 'model'):
-                raise NotImplementedError(
-                    "The model passed in must be torchacc or xla FSDP model")
-            assert hasattr(model, 'model')
+        if not isinstance(
+                model, xla_fsdp.XlaFullyShardedDataParallel) and not isinstance(
+                    model, FullyShardedDataParallel):
+            raise NotImplementedError(
+                "The model must be torchacc or xla FSDP model")
+        assert isinstance(model,
+                          xla_fsdp.XlaFullyShardedDataParallel) or isinstance(
+                              model, FullyShardedDataParallel)
+
+        if isinstance(model, xla_fsdp.XlaFullyShardedDataParallel):
             model = model.model
 
         shard_meta_data = model.get_shard_metadata()
@@ -346,18 +360,23 @@ class FullyShardedDataParallel(ParallelModule):
             passed into the optimizer whose state_dict is ``optim_state_dict``.
             optim_state_dict (Dict[str, Any]): The optimizer states to be loaded.
             rank0_only: (bool): control whether load state_dict only from
-                rank0 at the begining.(Default: ``True``) If set to True,
+                rank0 at the begining.(Default: ``True``). If set to True,
                 nonzero ranks should pass None in.
         
         Returns:
             Dict[str, Any]: A :class:`dict` containing the optimizer state for
             model which is sharded.
         """
-        if not isinstance(model, xla_fsdp.XlaFullyShardedDataParallel):
-            if not hasattr(model, 'model'):
-                raise NotImplementedError(
-                    "The model passed in must be torchacc or xla FSDP model")
-            assert hasattr(model, 'model')
+        if not isinstance(
+                model, xla_fsdp.XlaFullyShardedDataParallel) and not isinstance(
+                    model, FullyShardedDataParallel):
+            raise NotImplementedError(
+                "The model must be torchacc or xla FSDP model")
+        assert isinstance(model,
+                          xla_fsdp.XlaFullyShardedDataParallel) or isinstance(
+                              model, FullyShardedDataParallel)
+
+        if isinstance(model, FullyShardedDataParallel):
             model = model.model
 
         shard_meta_data = model.get_shard_metadata()
