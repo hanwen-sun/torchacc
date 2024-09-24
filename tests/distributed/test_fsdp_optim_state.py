@@ -38,9 +38,9 @@ def _init_model(size, config: Config):
 
 
 def _train(model: torch.nn.Module,
-                optim: torch.optim.Optimizer,
-                model_size: int = 1024,
-                num_iters: int = 1):
+           optim: torch.optim.Optimizer,
+           model_size: int = 1024,
+           num_iters: int = 1):
     optim.zero_grad()
     batch_size = model_size
     device = ta.lazy_device()
@@ -55,8 +55,8 @@ def _train(model: torch.nn.Module,
 
 
 def _train_without_update(model: torch.nn.Module,
-                               optim: torch.optim.Optimizer,
-                               model_size: int = 1024):
+                          optim: torch.optim.Optimizer,
+                          model_size: int = 1024):
     # do forward and backward and no optim.step()
     optim.zero_grad()
     batch_size = model_size
