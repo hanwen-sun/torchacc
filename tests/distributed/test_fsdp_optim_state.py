@@ -54,7 +54,7 @@ def _train(model: torch.nn.Module,
         optim.step()
 
 
-def _train_step_without_update(model: torch.nn.Module,
+def _train_without_update(model: torch.nn.Module,
                                optim: torch.optim.Optimizer,
                                model_size: int = 1024):
     # do forward and backward and no optim.step()
@@ -107,7 +107,7 @@ def _get_fsdp_osd_1(world_size,
 
     model_1, optim_1 = _init_model(model_size, config=config1)
     # iter 10 steps
-    _train_step(model_1, optim_1, model_size, 10)
+    _train(model_1, optim_1, model_size, 10)
 
     # get the optim_state_dict for model1
     if full_state_dict:
@@ -140,7 +140,7 @@ def _get_fsdp_osd_2(world_size,
         model_2, fsdp_osd1, rank0_only=rank0_only)
 
     optim_2.load_state_dict(fsdp_osd_to_load)
-    _train_step_without_update(model_2, optim_2, model_size)
+    _train_without_update(model_2, optim_2, model_size)
     if full_state_dict:
         fsdp_osd2 = FSDP.full_optim_state_dict(
             model_2, optim_2, rank0_only=rank0_only)
