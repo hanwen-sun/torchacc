@@ -254,7 +254,7 @@ class FullyShardedDataParallel(ParallelModule):
             return an empty :class:`dict`.
 
         Args:
-            model (torch.nn.Module): FSDP model(torchacc or xla) whose parameters were 
+            model (torch.nn.Module): FSDP model(torchacc or xla FSDP) whose parameters were 
             passed into the optimizer ``optim``.
             optim (torch.optim.Optimizer): Optimizer for model 's
                 parameters.
@@ -272,6 +272,10 @@ class FullyShardedDataParallel(ParallelModule):
             then nonzero ranks return an :class:`dict` with keys but empty value.
         """
         if not isinstance(model, xla_fsdp.XlaFullyShardedDataParallel):
+            if not hasattr(model, 'model'):
+                raise NotImplementedError(
+                    "The model passed in must be torchacc or xla FSDP model")
+            assert hasattr(model, 'model')
             model = model.model
 
         shard_meta_data = model.get_shard_metadata()
@@ -343,14 +347,17 @@ class FullyShardedDataParallel(ParallelModule):
             optim_state_dict (Dict[str, Any]): The optimizer states to be loaded.
             rank0_only: (bool): control whether load state_dict only from
                 rank0 at the begining.(Default: ``True``) If set to True,
-                the info of rank0's optim_state_dict will broadcast to nonzero ranks,
-                so it's no matter what the optim_state_dict nonzero ranks pass in.
+                nonzero ranks should pass None in.
         
         Returns:
             Dict[str, Any]: A :class:`dict` containing the optimizer state for
             model which is sharded.
         """
         if not isinstance(model, xla_fsdp.XlaFullyShardedDataParallel):
+            if not hasattr(model, 'model'):
+                raise NotImplementedError(
+                    "The model passed in must be torchacc or xla FSDP model")
+            assert hasattr(model, 'model')
             model = model.model
 
         shard_meta_data = model.get_shard_metadata()
