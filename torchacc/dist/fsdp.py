@@ -319,14 +319,26 @@ class FullyShardedDataParallel(ParallelModule):
                     'params'].append(fn)
 
         unflat_state_dict = {fn: {} for fn in flatten_name_list}
-
+        
+        all_gather_time = 0
+        all_gather_currency = 0
+        D2H_time = 0
+        D2H_currency = 0
+        
+        import time
+        
         for idx, layer_state in enumerate(sharded_optim_state.values()):
             layer_names = layer_name_lists[idx]
             layer_shapes = layer_size_lists[idx]
             layer_numels = layer_numel_lists[idx]
             for state_name, state_params in layer_state.items():
+                start_time = time.time()
                 tensor_buffer = optim_utils.all_gather_state(
                     state_params, model.sharding_groups, model.all_gather_op)
+                all_gather_currency += 1
+                end_time = time.time()
+                all_gather_time += end_time - start_time
+                
                 tensor_buffer = optim_utils.unpad(
                     tensor_buffer, layer_numels,
                     model.world_size * model._shard_size_multiple)
@@ -337,12 +349,19 @@ class FullyShardedDataParallel(ParallelModule):
                     for fn, fp in zip(layer_names, orig_params):
                         if cpu_offload:
                             ta.mark_step()  # tensor evaluation
+                            start_time = time.time()
                             unflat_state_dict[fn][state_name] = fp.cpu()
+                            D2H_currency += 1
+                            end_time = time.time()
+                            D2H_time += end_time - start_time
                         else:
                             unflat_state_dict[fn][state_name] = fp
                 ta.mark_step()
         consolidate_optim_state_dict['state'] = unflat_state_dict
-
+        if model.rank == 0:
+            print(f"all_gather_time: {all_gather_time}s    all_gather_currency: {all_gather_currency}")
+            print(f"D2H_time: {D2H_time}s   D2H_currecy: {D2H_currency}")
+        
         return consolidate_optim_state_dict
 
     @staticmethod
@@ -412,14 +431,25 @@ class FullyShardedDataParallel(ParallelModule):
         layer_name_lists, layer_size_lists, layer_numel_lists = optim_utils.get_layer_full_info(
             shard_meta_data, model.state_dict())
 
+        import time
+        start_time = time.time()
         if rank0_only:
             unflat_optim_state = optim_utils.broadcast_processed_state(
                 unflat_optim_state, model.rank, model.sharding_groups)
+        end_time = time.time()
+        if model.rank == 0:
+            #print(f"rank{model.rank()} cpu broadcast processed state time: {end_time = start_time}s")
+            print(f"rank:{model.rank} cpu broadcast processed state time: {end_time - start_time}s")
+            
         unflat_state = unflat_optim_state['state']
 
         flat_optim_state['param_groups'] = copy.deepcopy(
             unflat_optim_state['param_groups'])
 
+        broadcast_time = 0
+        broadcast_currency = 0
+        
+        #flatten_shard_time = 0
         for idx, layer_names in enumerate(layer_name_lists):
             flat_value: Dict[str, Any] = {}
             # broadcast tensor to other ranks per layer per state
@@ -436,17 +466,25 @@ class FullyShardedDataParallel(ParallelModule):
                         break
                     tensor_buffer = unflat_state[name][state_name]
                     if rank0_only:
+                        start_time = time.time()
                         tensor_buffer = optim_utils.broadcast_state(
                             state_params, model.xla_device, model.rank,
                             model.sharding_groups,
                             model.collective_broadcast_op)
+                        end_time = time.time()
+                        broadcast_currency += 1
+                        broadcast_time += end_time - start_time
+            
                     tensor_buffer_list.append(tensor_buffer)
-
+                
+                #start_time = time.time()
                 flat_tensor = optim_utils.flatten_optim_state(
                     tensor_buffer_list)
 
                 if len(flat_tensor):
                     flat_value[state_name] = model._get_shard(flat_tensor)
+                #end_time = time.time()
+                #flatten_shard_time += end_time - start_time
                 ta.mark_step()
 
             flat_optim_state['state'][idx] = flat_value
@@ -454,5 +492,8 @@ class FullyShardedDataParallel(ParallelModule):
         flat_optim_state['param_groups'][0]['params'] = [
             i for i in range(0, len(flat_optim_state['state'].keys()))
         ]
-
+        
+        if model.rank == 0:
+            print(f"rank{model.rank} gpu broadcast state time: {broadcast_time}s broadcast_currency: {broadcast_currency}")
+            #print(f"rank{model.rank} flatten and shard time: {flatten_shard_time}s ")
         return flat_optim_state
