@@ -344,18 +344,20 @@ class FullyShardedDataParallel(ParallelModule):
                     model.world_size * model._shard_size_multiple)
                 orig_params = optim_utils.unflatten_optim_params(
                     tensor_buffer, layer_names, layer_shapes, layer_numels)
-
+                
+                if cpu_offload:
+                    orig_params = xm._maybe_convert_to_cpu(orig_params)
                 if not rank0_only or model.rank == 0:
-                    ta.mark_step()  # tensor evaluation
+                    #ta.mark_step()  # tensor evaluation
                     for fn, fp in zip(layer_names, orig_params):
-                        if cpu_offload:
-                            start_time = time.time()
-                            unflat_state_dict[fn][state_name] = fp.cpu()
-                            D2H_currency += 1
-                            end_time = time.time()
-                            D2H_time += end_time - start_time
-                        else:
-                            unflat_state_dict[fn][state_name] = fp
+                        #if cpu_offload:
+                        #    start_time = time.time()
+                        #    unflat_state_dict[fn][state_name] = fp.cpu()
+                        #    D2H_currency += 1
+                        #    end_time = time.time()
+                        #    D2H_time += end_time - start_time
+                        #else:
+                        unflat_state_dict[fn][state_name] = fp
                 ta.mark_step()
         consolidate_optim_state_dict['state'] = unflat_state_dict
         if model.rank == 0:
