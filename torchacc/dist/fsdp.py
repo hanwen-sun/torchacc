@@ -346,9 +346,9 @@ class FullyShardedDataParallel(ParallelModule):
                     tensor_buffer, layer_names, layer_shapes, layer_numels)
 
                 if not rank0_only or model.rank == 0:
+                    ta.mark_step()  # tensor evaluation
                     for fn, fp in zip(layer_names, orig_params):
                         if cpu_offload:
-                            ta.mark_step()  # tensor evaluation
                             start_time = time.time()
                             unflat_state_dict[fn][state_name] = fp.cpu()
                             D2H_currency += 1
