@@ -335,19 +335,20 @@ class FullyShardedDataParallel(ParallelModule):
                 start_time = time.time()
                 tensor_buffer = optim_utils.all_gather_state(
                     state_params, model.sharding_groups, model.all_gather_op)
-                all_gather_currency += 1
-                end_time = time.time()
-                all_gather_time += end_time - start_time
-                
-                tensor_buffer = optim_utils.unpad(
-                    tensor_buffer, layer_numels,
-                    model.world_size * model._shard_size_multiple)
-                orig_params = optim_utils.unflatten_optim_params(
-                    tensor_buffer, layer_names, layer_shapes, layer_numels)
-                
-                if cpu_offload:
-                    orig_params = xm._maybe_convert_to_cpu(orig_params)
                 if not rank0_only or model.rank == 0:
+                    if cpu_offload:
+                        tensor_buffer = xm._maybe_convert_to_cpu(tensor_buffer)
+                    all_gather_currency += 1
+                    end_time = time.time()
+                    all_gather_time += end_time - start_time
+                    
+                    tensor_buffer = optim_utils.unpad(
+                        tensor_buffer, layer_numels,
+                        model.world_size * model._shard_size_multiple)
+                    orig_params = optim_utils.unflatten_optim_params(
+                        tensor_buffer, layer_names, layer_shapes, layer_numels)
+                
+                # if not rank0_only or model.rank == 0:
                     #ta.mark_step()  # tensor evaluation
                     for fn, fp in zip(layer_names, orig_params):
                         #if cpu_offload:
