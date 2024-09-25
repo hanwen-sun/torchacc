@@ -8,6 +8,7 @@ import torch
 import torch.fx as fx
 from torch.fx.passes.split_module import split_module
 import torch_xla.distributed.fsdp as xla_fsdp
+import torch_xla.core.xla_model as xm
 
 import torchacc as ta
 from torchacc.config import Config
